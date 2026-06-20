@@ -1,0 +1,17 @@
+# GUI 独立打包专用依赖（不包含 scripts/ 所需的重型库）。
+#
+# 使用场景：
+#   - 在干净的虚拟环境中构建 PyInstaller 单包，避免 torch / ultralytics
+#     等大体积库被自动收集进 exe，导致包体积膨胀到 GB 级。
+#   - GUI 与 scripts 通过子进程 + 用户配置的 Python 解释器解耦，因此
+#     这里只需要 GUI 自身运行所必需的依赖。
+#
+# 安装：
+#   python -m venv .venv-gui
+#   source .venv-gui/bin/activate          # Windows: .venv-gui\Scripts\activate
+#   pip install -r requirements-gui.txt
+#   pip install pyinstaller
+#
+# 然后参考仓库根目录下的 build.sh / build.spec 进行打包。
+
+PyQt5>=5.15.0

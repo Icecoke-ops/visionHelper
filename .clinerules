@@ -1,0 +1,23 @@
+# Cline 项目规则
+
+## 任务开始前的必读步骤
+
+每次接到新任务时，请先按以下顺序读取项目相关文件，以获取必要的上下文：
+
+1. `README.md`（如果存在）
+2. `requirements.txt`
+3. `pyproject.toml`（如果存在）
+4. 与任务最相关的源码文件（例如 `deduplicate_images.py`、`extract_video_frames.py` 等）
+
+在读完这些文件、确认项目结构和依赖关系后，再开始分析并执行任务。
+
+## 编码规范
+
+- 使用 Python 3 语法。
+- 文件头使用 `#!/usr/bin/env python3` 和 `# -*- coding: utf-8 -*-`。
+- 为模块和公开函数编写清晰的 docstring。
+- 优先使用 `pathlib.Path` 处理文件路径。
+- 关键函数需包含参数校验和异常处理。
+- 每个工具都通过 API 接口的方法进行暴露，然后通过 test 脚本进行测试。
+- 项目使用 /home/zh/.anaconda3/vision/python 这个环境运行。
+- 每次修改完成代码不需要你来执行，我自己执行即可

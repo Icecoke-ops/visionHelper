@@ -1,0 +1,175 @@
+# ===========================
+# Python
+# ===========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  通常这些文件由模板生成的脚本写入，但保留 .spec 文件（如 visionHelper.spec）
+*.manifest
+# *.spec  # 项目使用了 visionHelper.spec，故不忽略
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv / pipenv / poetry / pdm
+.python-version
+Pipfile.lock
+poetry.lock
+.pdm.toml
+
+# Environments
+.env
+.env.*
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# mypy / pyre / ruff / pytype
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# ===========================
+# IDE / Editors
+# ===========================
+# PyCharm / JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Vim / Emacs
+*.swp
+*.swo
+*~
+.\#*
+\#*\#
+
+# Sublime
+*.sublime-project
+*.sublime-workspace
+
+# ===========================
+# OS
+# ===========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ===========================
+# 项目相关：数据/模型/输出
+# ===========================
+# 日志文件
+*.log
+logs/
+log/
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.old
+
+# 数据集/图片/视频（一般不入库，按需调整）
+datasets/
+dataset/
+data/
+images/
+videos/
+frames/
+output/
+outputs/
+runs/
+results/
+
+# 标注与导出产物
+annotations/
+labels/
+exports/
+*.cache
+
+# 模型权重文件
+*.pt
+*.pth
+*.onnx
+*.engine
+*.weights
+*.h5
+*.ckpt
+*.pkl
+weights/
+models/
+checkpoints/
+
+# 配置中的本地敏感信息
+config.local.*
+*.local
+
+# ===========================
+# 打包产物
+# ===========================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
