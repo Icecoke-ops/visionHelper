@@ -5,7 +5,7 @@
 
 整合 YOLO 数据集导出与模型训练两个子任务：
     - 导出数据集：调用 ``scripts.export_yolo_dataset`` 将工作目录下的
-      LabelMe 标注导出为 YOLO 格式，并自动划分 train/test。
+      X-AnyLabeling 标注导出为 YOLO 格式，并自动划分 train/test。
     - 训练模型：调用 ``scripts.train_model`` 对导出的数据集进行训练。
 
 视觉风格统一来自 :mod:`gui.theme` 与 :mod:`gui.widgets`，本模块不再
@@ -24,17 +24,17 @@ from PyQt5.QtWidgets import (
 )
 
 from gui import theme
+from gui._proc import build_script_argv
 from gui.base_pages import BaseTaskPage
 from gui.config import DATASET_FOLDER, IMAGES_FOLDER, TRAIN_FOLDER
 from gui.widgets import (
     FormRow,
-    HSeparator,
     LabeledSpinBox,
     PrimaryButton,
     SecondaryButton,
-    SectionTitle,
     SuccessButton,
 )
+
 # 注意：不要在模块顶层 import scripts.api，避免在 PyInstaller 打包态下
 # GUI 进程因找不到 scripts 包（或顺带触发 torch / ultralytics 等重依赖
 # 的 import）而启动失败。需要时改为函数内部局部导入轻量子模块。
@@ -71,14 +71,12 @@ def _build_base_models(task: str) -> list:
 class ModelTrainingPage(BaseTaskPage):
     """模型训练页面：导出 YOLO 数据集并启动训练。"""
 
-    def __init__(self, parent: QWidget = None):
-        super().__init__(parent)
+    def __init__(self, parent: QWidget = None, ctx=None):
+        super().__init__(parent, ctx=ctx)
         self._build_form()
 
     def _build_form(self):
         # ===== 数据集导出区域 =====
-        self.content_layout.addWidget(SectionTitle("1. 导出 YOLO 数据集"))
-
         self.task_combo = QComboBox()
         self.task_combo.addItem("目标检测（detect）", "detect")
         self.task_combo.addItem("旋转框（obb）", "obb")
@@ -105,12 +103,12 @@ class ModelTrainingPage(BaseTaskPage):
         self.export_btn.clicked.connect(self._export_dataset)
         self.content_layout.addWidget(self.export_btn, alignment=Qt.AlignLeft)
 
-        self.content_layout.addWidget(HSeparator())
-
         # ===== 模型训练区域 =====
-        self.content_layout.addWidget(SectionTitle("2. 训练模型"))
+        # 新建第二张卡片，将"模型训练"与上方"数据集导出"在视觉上分离
+        _, self.content_layout = self._add_card()
 
         self.dataset_dir_edit = self._add_file_row("数据集目录：", is_directory=True)
+
 
         # ===== 模型选择 =====
         # 与"自动标注"页面保持一致的交互：下拉框 + 路径输入框 + 刷新按钮。
@@ -230,34 +228,32 @@ class ModelTrainingPage(BaseTaskPage):
         return train / total, test / total
 
     def _export_dataset(self):
-        work_dir = self._work_dir()
-        if not work_dir:
-            QMessageBox.warning(self, "参数缺失", "请在导航栏下方设置工作目录")
+        work_dir = self._require_work_dir()
+        if work_dir is None:
             return
 
-        input_dir = str(Path(work_dir) / IMAGES_FOLDER)
-        if not Path(input_dir).is_dir():
-            QMessageBox.warning(self, "路径错误", f"标注目录不存在：{input_dir}")
+        input_dir = self._require_existing_dir(
+            str(work_dir / IMAGES_FOLDER), "标注目录"
+        )
+        if input_dir is None:
             return
-
-        output_dir = str(Path(work_dir) / DATASET_FOLDER)
 
         ratios = self._get_split_ratios()
         if ratios is None:
             return
         train_ratio, test_ratio = ratios
 
-        task = self.task_combo.currentData()
-        self.dataset_dir_edit.setText(output_dir)
+        output_dir = work_dir / DATASET_FOLDER
+        self.dataset_dir_edit.setText(str(output_dir))
 
-        arguments = [
-            "-m", "scripts.export_yolo_dataset",
+        arguments = build_script_argv(
+            "scripts.export_yolo_dataset",
             input_dir,
             output_dir,
-            "--task", task,
-            "--train-ratio", f"{train_ratio:.4f}",
-            "--test-ratio", f"{test_ratio:.4f}",
-        ]
+            task=self.task_combo.currentData(),
+            train_ratio=f"{train_ratio:.4f}",
+            test_ratio=f"{test_ratio:.4f}",
+        )
         self._start_subprocess(arguments, title="导出 YOLO 数据集")
 
     def on_page_shown(self):
@@ -279,29 +275,19 @@ class ModelTrainingPage(BaseTaskPage):
             QMessageBox.warning(self, "参数缺失", "请选择数据集目录")
             return
 
-        yaml_path = str(Path(dataset_dir) / "data.yaml")
-        model = self.model_edit.text().strip() or "yolov8n"
-        epochs = self.epochs_spin.value()
-        imgsz = self.imgsz_spin.value()
-        batch = self.batch_spin.value()
-        task = self.task_combo.currentData()
-
-        arguments = [
-            "-m", "scripts.train_model",
-            yaml_path,
-            "--task", task,
-            "--model", model,
-            "--epochs", str(epochs),
-            "--imgsz", str(imgsz),
-            "--batch", str(batch),
-        ]
-
+        yaml_path = Path(dataset_dir) / "data.yaml"
         work_dir = self._work_dir()
-        project = str(Path(work_dir) / TRAIN_FOLDER) if work_dir else ""
-        if project:
-            arguments.extend(["--project", project])
-        name = self.name_edit.text().strip()
-        if name:
-            arguments.extend(["--name", name])
+        project = str(Path(work_dir) / TRAIN_FOLDER) if work_dir else None
 
+        arguments = build_script_argv(
+            "scripts.train_model",
+            yaml_path,
+            task=self.task_combo.currentData(),
+            model=self.model_edit.text().strip() or "yolov8n",
+            epochs=self.epochs_spin.value(),
+            imgsz=self.imgsz_spin.value(),
+            batch=self.batch_spin.value(),
+            project=project,
+            name=self.name_edit.text().strip() or None,
+        )
         self._start_subprocess(arguments, title="训练模型")

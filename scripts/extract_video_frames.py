@@ -1,239 +1,80 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-将视频按指定间隔抽帧并保存为图片。
+视频抽帧工具 CLI 门面。
 
-该模块暴露以下核心方法：
-    - extract_video_frames(input_video, output_dir, frame_step=1,
-                           image_extension="jpg", quality=95,
-                           prefix="frame", start_time=None, end_time=None)
+实际实现位于 :mod:`scripts.core.extract_video_frames`，本模块仅负责：
 
-用法示例：
-    from extract_video_frames import extract_video_frames
-    extract_video_frames(
-        input_video="/path/to/video.mp4",
-        output_dir="/path/to/output",
-        frame_step=5,           # 每隔 5 帧抽一张
-        image_extension="jpg",
-        quality=95,
-        prefix="frame",
-    )
+1. 解析命令行参数（``argparse``）；
+2. 在调用核心实现前做 **轻量的参数边界校验**，尽早给出友好提示；
+3. 统一捕获常见异常（``ValueError`` / ``FileNotFoundError`` / ``KeyboardInterrupt``）并
+   以非 0 退出码返回，便于 GUI 子进程通过 returncode 与 stderr 显示结果；
+4. 对外 re-export 核心函数与常量。
+
+注意：本模块刻意 **不直接 import OpenCV / numpy 等重依赖**——这些会在
+``scripts.core.extract_video_frames`` 内部按需加载，从而保证 ``import
+scripts.extract_video_frames`` 本身仍是低开销的。
+
+用法::
+
+    python -m scripts.extract_video_frames <input_video> <output_dir> [options]
+
+例::
+
+    python -m scripts.extract_video_frames input.mp4 ./out \\
+        --frame-step 5 --ext jpg --quality 95 --prefix frame
 """
 
+from __future__ import annotations
+
+import argparse
+import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-import cv2
-from tqdm import tqdm
+from scripts.config import SUPPORTED_SEEK_MODES
+from scripts.core.extract_video_frames import (
+    SUPPORTED_EXTENSIONS,
+    extract_video_frames,
+)
+from scripts.logging_utils import log
 
-
-
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"}
-
-
-def _format_index(index: int, width: int = 6) -> str:
-    """将索引格式化为固定宽度的字符串。"""
-    return str(index).zfill(width)
-
-
-def _ensure_dir(directory: str) -> Path:
-    """确保输出目录存在并返回 Path 对象。"""
-    path = Path(directory)
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+__all__ = [
+    "extract_video_frames",
+    "SUPPORTED_EXTENSIONS",
+    "SUPPORTED_SEEK_MODES",
+    "main",
+]
 
 
-def _validate_extension(ext: str) -> str:
-    """校验并规范化图片扩展名。"""
-    ext = ext.lower()
-    if not ext.startswith("."):
-        ext = f".{ext}"
-    if ext not in SUPPORTED_EXTENSIONS:
-        raise ValueError(
-            f"不支持的图片格式: {ext}，支持的格式为 {SUPPORTED_EXTENSIONS}"
-        )
-    return ext
-
-
-def _time_to_seconds(time_value) -> Optional[float]:
-    """
-    将时间参数转换为秒。
-    支持 int/float（秒数）或 "HH:MM:SS"/"MM:SS"/"SS" 格式字符串。
-    """
-    if time_value is None:
-        return None
-
-    if isinstance(time_value, (int, float)):
-        return float(time_value)
-
-    if isinstance(time_value, str):
-        parts = time_value.strip().split(":")
-        try:
-            parts = [float(p) for p in parts]
-        except ValueError as exc:
-            raise ValueError(f"无法解析时间字符串: {time_value}") from exc
-
-        if len(parts) == 1:
-            return parts[0]
-        if len(parts) == 2:
-            return parts[0] * 60 + parts[1]
-        if len(parts) == 3:
-            return parts[0] * 3600 + parts[1] * 60 + parts[2]
-        raise ValueError(f"时间字符串格式不正确: {time_value}")
-
-    raise TypeError(f"start_time/end_time 必须是 int、float 或 str， got {type(time_value)}")
-
-
-def _get_writer_params(ext: str, quality: int) -> Tuple:
-    """
-    根据扩展名返回 cv2.imwrite 所需的参数列表。
-
-    返回:
-        tuple: (params, is_lossless)，其中 params 为 imwrite 参数元组。
-    """
-    if ext in {".jpg", ".jpeg"}:
-        # OpenCV 的 JPEG 质量参数范围是 0-100
-        return (cv2.IMWRITE_JPEG_QUALITY, quality), False
-    if ext == ".png":
-        # PNG 压缩级别 0-9，数值越大压缩率越高；这里使用默认值 3
-        compression = max(0, min(9, 9 - quality // 11))
-        return (cv2.IMWRITE_PNG_COMPRESSION, compression), True
-    if ext == ".webp":
-        return (cv2.IMWRITE_WEBP_QUALITY, quality), False
-    return tuple(), False
-
-
-def extract_video_frames(
-        input_video: str,
-        output_dir: str,
-        frame_step: int = 1,
-        image_extension: str = "jpg",
-        quality: int = 100,
-        prefix: str = "frame",
-        start_time: Optional[float] = None,
-        end_time: Optional[float] = None,
-) -> List[str]:
-    """
-    将视频抽帧并保存为图片。
-
-    参数:
-        input_video: 输入视频文件路径。
-        output_dir: 输出图片保存目录。
-        frame_step: 抽帧间隔，默认 1（逐帧抽取）。每间隔 frame_step 帧保存一张。
-                    例如 frame_step=5 表示每 5 帧保存一张。
-        image_extension: 输出图片格式，支持 jpg/jpeg/png/bmp/webp/tiff/tif，默认 jpg。
-        quality: 输出图片质量（仅对 jpg/webp 有效），默认 100（原始画质）。
-        prefix: 输出文件名前缀，默认 "frame"。
-        start_time: 开始抽取的时间（秒或 "HH:MM:SS"/"MM:SS"/"SS" 格式字符串），默认从视频开头。
-        end_time: 结束抽取的时间（秒或时间字符串），默认抽到视频结尾。
-
-    返回:
-        保存的图片路径列表（按帧顺序）。
-
-    异常:
-        FileNotFoundError: 输入视频不存在。
-        ValueError: 参数校验失败。
-        RuntimeError: 无法打开视频文件或保存图片失败。
-    """
-    input_path = Path(input_video)
-    if not input_path.is_file():
-        raise FileNotFoundError(f"输入视频不存在: {input_video}")
-
-    if frame_step < 1:
-        raise ValueError("frame_step 必须大于等于 1")
-
-    ext = _validate_extension(image_extension)
-    output_path = _ensure_dir(output_dir)
-
-    start_sec = _time_to_seconds(start_time)
-    end_sec = _time_to_seconds(end_time)
-    if start_sec is not None and end_sec is not None and start_sec >= end_sec:
-        raise ValueError("start_time 必须小于 end_time")
-
-    cap = cv2.VideoCapture(str(input_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频文件: {input_video}")
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames <= 0:
-        cap.release()
-        raise RuntimeError(f"视频帧数无效: {input_video}")
-
-    # 计算起始/结束帧索引
-    start_frame = 0
-    end_frame = total_frames
-    if start_sec is not None:
-        start_frame = max(0, int(start_sec * fps))
-        if start_frame >= total_frames:
-            cap.release()
-            raise ValueError(f"start_time {start_sec}s 超出视频时长")
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-    if end_sec is not None:
-        end_frame = min(total_frames, int(end_sec * fps))
-        if end_frame <= start_frame:
-            cap.release()
-            raise ValueError(f"end_time {end_sec}s 必须大于 start_time")
-
-    params, _ = _get_writer_params(ext, quality)
-    saved_paths: List[str] = []
-    frame_index = start_frame
-    saved_count = 0
-
-    # 预估需要处理的帧数，用于进度条
-    estimated = max(1, (end_frame - start_frame) // frame_step)
-    pbar = tqdm(total=estimated, desc="抽取视频帧")
-
-    while frame_index < end_frame:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        if (frame_index - start_frame) % frame_step == 0:
-            filename = f"{prefix}_{_format_index(saved_count)}{ext}"
-            save_path = output_path / filename
-            ok = cv2.imwrite(str(save_path), frame, params)
-            if not ok:
-                cap.release()
-                pbar.close()
-                raise RuntimeError(f"保存图片失败: {save_path}")
-            saved_paths.append(str(save_path))
-            saved_count += 1
-            pbar.update(1)
-
-        frame_index += 1
-
-    cap.release()
-    pbar.close()
-
-    print(f"共抽取 {saved_count} 帧，保存到: {output_path}")
-    return saved_paths
-
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="视频抽帧工具")
+def _build_parser() -> argparse.ArgumentParser:
+    """构造命令行参数解析器（独立函数便于单元测试）。"""
+    parser = argparse.ArgumentParser(
+        prog="python -m scripts.extract_video_frames",
+        description="视频抽帧工具：按指定间隔抽取视频画面并保存为图片。",
+    )
     parser.add_argument("input_video", type=str, help="输入视频文件路径")
-    parser.add_argument("output_dir", type=str, help="输出图片保存目录")
+    parser.add_argument("output_dir", type=str, help="输出图片保存目录（不存在会自动创建）")
     parser.add_argument(
         "--frame-step",
         type=int,
         default=1,
-        help="抽帧间隔，默认 1（逐帧抽取）。",
+        help="抽帧间隔（必须为正整数），默认 1（逐帧抽取）。",
     )
     parser.add_argument(
         "--ext",
         type=str,
         default="jpg",
-        help="输出图片格式，默认 jpg。",
+        help=(
+            "输出图片格式，默认 jpg。"
+            f"支持：{', '.join(sorted(e.lstrip('.') for e in SUPPORTED_EXTENSIONS))}"
+        ),
     )
     parser.add_argument(
         "--quality",
         type=int,
         default=100,
-        help="输出图片质量，默认 100（原始画质）。",
+        help="输出图片质量（取值范围 1-100），默认 100（原始画质）。",
     )
     parser.add_argument(
         "--prefix",
@@ -245,23 +86,110 @@ if __name__ == "__main__":
         "--start-time",
         type=str,
         default=None,
-        help="开始抽取的时间（秒或 HH:MM:SS/MM:SS/SS 格式）。",
+        help="开始抽取的时间（秒或 HH:MM:SS/MM:SS/SS 格式），默认从视频开头。",
     )
     parser.add_argument(
         "--end-time",
         type=str,
         default=None,
-        help="结束抽取的时间（秒或 HH:MM:SS/MM:SS/SS 格式）。",
+        help="结束抽取的时间（秒或 HH:MM:SS/MM:SS/SS 格式），默认抽到视频结尾。",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--seek-mode",
+        type=str,
+        default="decode_all",
+        choices=sorted(SUPPORTED_SEEK_MODES),
+        help=(
+            "跳帧策略：decode_all=顺序解码每一帧（默认，安全且通用）；"
+            "seek=主动跳到下一目标帧（大 frame_step 下更快，对部分编码可能略有偏差）。"
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="覆盖输出目录中已存在的同名文件（默认 False，重名自动追加 _1/_2 后缀）。",
+    )
+    return parser
 
-    extract_video_frames(
-        input_video=args.input_video,
-        output_dir=args.output_dir,
-        frame_step=args.frame_step,
-        image_extension=args.ext,
-        quality=args.quality,
-        prefix=args.prefix,
-        start_time=args.start_time,
-        end_time=args.end_time,
-    )
+
+def _validate_args(args: argparse.Namespace) -> None:
+    """对命令行参数做友好的预校验。
+
+    任何不合法情况都以 :class:`ValueError` 抛出，由 :func:`main` 统一处理。
+    """
+    # 输入视频必须存在且为文件
+    input_path = Path(args.input_video)
+    if not input_path.exists():
+        raise ValueError(f"输入视频不存在：{args.input_video}")
+    if not input_path.is_file():
+        raise ValueError(f"输入视频不是文件：{args.input_video}")
+
+    # 输出目录不能是已存在的同名文件
+    output_path = Path(args.output_dir)
+    if output_path.exists() and not output_path.is_dir():
+        raise ValueError(f"输出路径已存在但不是目录：{args.output_dir}")
+
+    if args.frame_step is not None and args.frame_step < 1:
+        raise ValueError(f"--frame-step 必须为正整数，当前为 {args.frame_step}")
+
+    if args.quality is not None and not (1 <= args.quality <= 100):
+        raise ValueError(f"--quality 必须在 1~100 之间，当前为 {args.quality}")
+
+    # 扩展名校验（兼容前置点号写法）
+    ext_normalized = "." + args.ext.lower().lstrip(".")
+    if ext_normalized not in SUPPORTED_EXTENSIONS:
+        supported = ", ".join(sorted(e.lstrip(".") for e in SUPPORTED_EXTENSIONS))
+        raise ValueError(
+            f"不支持的图片格式：{args.ext!r}，请使用以下之一：{supported}"
+        )
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """命令行入口。
+
+    参数:
+        argv: 命令行参数列表（不含程序名），默认从 ``sys.argv[1:]`` 读取，
+            主要用于单元测试。
+
+    返回:
+        进程退出码：0 表示成功；2 表示参数非法；1 表示运行时错误；130 表示用户中断。
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        _validate_args(args)
+    except ValueError as exc:
+        log(f"[参数错误] {exc}", stream=sys.stderr)
+        return 2
+
+    try:
+        saved = extract_video_frames(
+            input_video=args.input_video,
+            output_dir=args.output_dir,
+            frame_step=args.frame_step,
+            image_extension=args.ext,
+            quality=args.quality,
+            prefix=args.prefix,
+            start_time=args.start_time,
+            end_time=args.end_time,
+            seek_mode=args.seek_mode,
+            overwrite=args.overwrite,
+        )
+    except KeyboardInterrupt:
+        log("[已取消] 用户中断，部分帧可能未写入完成。", stream=sys.stderr)
+        return 130
+    except (ValueError, FileNotFoundError) as exc:
+        # core 内部已做的参数/路径校验在此统一汇报为友好提示
+        log(f"[错误] {exc}", stream=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001
+        log(f"[错误] 视频抽帧失败：{exc}", stream=sys.stderr)
+        return 1
+
+    log(f"[完成] 共保存 {len(saved)} 张图片到 {args.output_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

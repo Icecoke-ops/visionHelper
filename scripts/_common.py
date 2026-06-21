@@ -1,30 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-scripts 包内部共享工具函数。
+``scripts`` 包内部共享的 **轻量** IO 工具集。
 
-集中管理图片扩展名、LabelMe JSON 标注文件的读取与图片解析等
-跨模块复用的辅助逻辑，避免在 ``annotation_stats``、``auto_annotate``、
-``export_yolo_dataset`` 等模块中重复实现。
+集中管理跨模块复用的辅助逻辑：图片 / 标注文件判定、X-AnyLabeling JSON
+读取、图片解析、目录遍历与已训练模型扫描等。所有逻辑只依赖标准库
+（不引入 ``torch`` / ``ultralytics`` / ``cv2`` / ``transformers`` 等重依赖），
+确保打包后的 GUI 进程也能在不触发 ``scripts.api`` 的情况下直接 import。
 
-仅供 ``scripts`` 包内部使用，不对外暴露（模块名以下划线开头）。
+- 常量 :data:`IMAGE_EXTENSIONS` 与 :class:`ProgressLogger` 在此处仅作 **向后兼容
+  的 re-export**：实现已分别迁移到 :mod:`scripts.config` 与 :mod:`scripts.logging_utils`。
 """
 
 import json
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
-# 常见图片扩展名（统一小写、带点号）
-IMAGE_EXTENSIONS: Tuple[str, ...] = (
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".bmp",
-    ".webp",
-    ".tiff",
-    ".tif",
-    ".gif",
-)
+from scripts.config import IMAGE_EXTENSIONS  # re-export，保持外部 import 兼容
+from scripts.logging_utils import ProgressLogger  # re-export，保持外部 import 兼容
+
+
+__all__ = [
+    "IMAGE_EXTENSIONS",
+    "ProgressLogger",
+    "discover_trained_models",
+    "is_annotation_file",
+    "is_image_file",
+    "iter_annotations",
+    "iter_images",
+    "iter_matched_pairs",
+    "load_annotation",
+    "resolve_image_path",
+    "resolve_image_stem",
+]
 
 
 def is_image_file(path: Path) -> bool:
@@ -33,12 +41,12 @@ def is_image_file(path: Path) -> bool:
 
 
 def is_annotation_file(path: Path) -> bool:
-    """判断文件是否为 LabelMe JSON 标注文件。"""
+    """判断文件是否为 X-AnyLabeling JSON 标注文件。"""
     return path.is_file() and path.suffix.lower() == ".json"
 
 
 def load_annotation(annotation_path: Path) -> Optional[dict]:
-    """安全加载 LabelMe JSON 标注文件，失败时返回 ``None``。"""
+    """安全加载 X-AnyLabeling JSON 标注文件，失败时返回 ``None``。"""
     try:
         with annotation_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
@@ -80,9 +88,76 @@ def resolve_image_path(annotation_path: Path, data: dict) -> Optional[Path]:
     return None
 
 
+def iter_images(folder: Path) -> Iterator[Path]:
+    """按文件名排序遍历目录顶层的所有图片文件。"""
+    if not folder.is_dir():
+        return iter(())
+    images = [p for p in folder.iterdir() if is_image_file(p)]
+    images.sort(key=lambda p: p.name)
+    return iter(images)
+
+
+def iter_annotations(folder: Path) -> Iterator[Path]:
+    """按文件名排序遍历目录顶层的所有 JSON 标注文件。"""
+    if not folder.is_dir():
+        return iter(())
+    anns = [p for p in folder.iterdir() if is_annotation_file(p)]
+    anns.sort(key=lambda p: p.name)
+    return iter(anns)
+
+
+def iter_matched_pairs(
+        folder: Path,
+        require_shapes: bool = False,
+) -> Iterator[Tuple[Path, Path, dict]]:
+    """
+    遍历目录下与图片相匹配的 ``(image_path, annotation_path, data)`` 三元组。
+
+    匹配规则：
+
+    1. 标注文件 JSON 能被成功解析为 dict；
+    2. 通过 :func:`resolve_image_path` 解析到的图片实际存在；
+    3. 同一张图片（按 stem）只产出一次（标注文件按名称排序后取首个）。
+
+    参数:
+        folder: 待扫描的目录。
+        require_shapes: 是否要求 ``shapes`` 非空（默认 ``False``）。
+
+    产出顺序按图片文件名升序。
+    """
+    if not folder.is_dir():
+        return
+
+    # 先收集所有候选标注，按名称排序保证稳定性
+    annotations = sorted(
+        (p for p in folder.iterdir() if is_annotation_file(p)),
+        key=lambda p: p.name,
+    )
+
+    pairs: List[Tuple[Path, Path, dict]] = []
+    seen_stems: set = set()
+    for ann_path in annotations:
+        data = load_annotation(ann_path)
+        if data is None:
+            continue
+        if require_shapes and not data.get("shapes"):
+            continue
+        image_path = resolve_image_path(ann_path, data)
+        if image_path is None:
+            continue
+        if image_path.stem in seen_stems:
+            continue
+        seen_stems.add(image_path.stem)
+        pairs.append((image_path, ann_path, data))
+
+    pairs.sort(key=lambda item: item[0].name)
+    for item in pairs:
+        yield item
+
+
 def discover_trained_models(runs_dir: str) -> List[Tuple[str, str]]:
     """
-    扫描 runs 目录下的训练模型。
+    扫描 ``runs`` 目录下的训练模型。
 
     Ultralytics 默认结构为 ``runs/<train_name>/weights/<name>.pt``，本函数
     枚举该结构并返回 ``(显示名称, 权重绝对路径)`` 列表，显示名称形如

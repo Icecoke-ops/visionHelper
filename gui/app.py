@@ -15,9 +15,8 @@ import os
 import platform
 import sys
 from pathlib import Path
-from typing import List
 
-from PyQt5.QtCore import QSettings, Qt, QT_VERSION_STR, QUrl
+from PyQt5.QtCore import Qt, QT_VERSION_STR, QUrl
 from PyQt5.QtGui import QDesktopServices, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -35,13 +34,13 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from gui import theme
+from gui import settings, theme
 from gui.auto_annotate_page import AutoAnnotatePage
+from gui.context import AppContext
 from gui.data_annotation_page import DataAnnotationPage
-from gui.image_deduplicate_page import ImageDeduplicatePage
 from gui.model_training_page import ModelTrainingPage
 from gui.video_frame_page import VideoFramePage
-from gui.welcome_page import MAX_RECENT, WelcomePage
+from gui.welcome_page import WelcomePage
 from gui.widgets import (
     HSeparator,
     PrimaryButton,
@@ -50,11 +49,8 @@ from gui.widgets import (
 )
 
 
-# QSettings 中保存历史工作目录列表的键名
-RECENT_WORK_DIRS_KEY = "recent_work_dirs"
-
 # visionHelper 版本号
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 # visionHelper 项目号（项目编号 / 项目编码）
 APP_PROJECT_CODE = "VH-2026-001"
@@ -118,8 +114,8 @@ class AboutDialog(QDialog):
         content_layout.addWidget(self._build_body(
             "• 视频抽帧：按帧间隔从视频中抽取图片，支持多种格式与质量参数。\n"
             "• 图片去重：基于 ViT 特征对图片进行相似度去重。\n"
-            "• 标注统计：统计 LabelMe JSON 标注中的图片数 / 实例数。\n"
-            "• 自动标注：使用训练好的 YOLO 模型自动生成 LabelMe 标注。\n"
+            "• 标注统计：统计 X-AnyLabeling JSON 标注中的图片数 / 实例数。\n"
+            "• 自动标注：使用训练好的 YOLO 模型自动生成 X-AnyLabeling 标注。\n"
             "• 数据集导出：将已标注图片导出为标准 YOLO 数据集。\n"
             "• 模型训练：基于 Ultralytics YOLO 进行训练，"
             "支持 detect / obb / segment / classify 四种任务。"
@@ -335,7 +331,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("visionHelper")
-        self.setMinimumSize(960, 640)
+        self.setMinimumSize(800, 540)
+
+        # 全局上下文：work_dir / python_env 等跨页面状态
+        self.ctx = AppContext(self)
 
         # 根容器：欢迎页 / 主工作界面 二选一
         self._root_stack = QStackedWidget()
@@ -371,14 +370,15 @@ class MainWindow(QMainWindow):
 
     def _init_menu(self):
         menubar = self.menuBar()
-        # 直接以 action 形式列出，简化菜单结构
+        # 直接以 action 形式列出，简化菜单结构。
+        # 注："视频抽帧"页面内部已合并"图片去重"卡片，故不再单列菜单项。
         menubar.addAction("视频抽帧", lambda: self._switch_page(0))
-        menubar.addAction("图片去重", lambda: self._switch_page(1))
-        menubar.addAction("标注统计", lambda: self._switch_page(2))
-        menubar.addAction("模型训练", lambda: self._switch_page(3))
-        menubar.addAction("自动标注", lambda: self._switch_page(4))
+        menubar.addAction("标注统计", lambda: self._switch_page(1))
+        menubar.addAction("模型训练", lambda: self._switch_page(2))
+        menubar.addAction("自动标注", lambda: self._switch_page(3))
         menubar.addAction("关闭项目", self._show_welcome)
         menubar.addAction("关于", self._show_about)
+
 
     # ------------------------------------------------------------------
     # 欢迎页 / 主界面切换
@@ -390,7 +390,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _show_welcome(self):
-        self._welcome_page.set_recent_dirs(self._load_recent_dirs())
+        self._welcome_page.set_recent_dirs(settings.load_recent_dirs())
         self.menuBar().setVisible(False)
         self._root_stack.setCurrentWidget(self._welcome_page)
 
@@ -404,7 +404,7 @@ class MainWindow(QMainWindow):
         self.work_dir_edit.setText(path)
         self._save_work_dir()
         # 把欢迎页的最新顺序写回设置
-        self._save_recent_dirs(self._welcome_page.recent_dirs())
+        settings.save_recent_dirs(self._welcome_page.recent_dirs())
         self._switch_page(0)
         self._show_main()
 
@@ -421,13 +421,22 @@ class MainWindow(QMainWindow):
         self._init_top_bars(layout)
 
         self.stacked = _WorkDirNotifier()
+        # 把全局 AppContext 注入到每个子页面：页面优先通过 self.ctx 读取
+        # work_dir / python_env，避免遍历 parent 链。各 Page 构造器需要
+        # 兼容 ``ctx`` 关键字参数（已在 BasePage 中提供默认值）。
+        # "图片去重"已作为第二张卡片合并进 VideoFramePage，不再单独注册页面。
+        # 这里保持 dict 顺序与菜单索引一致：
+        #   index 0 → 视频抽帧 + 图片去重
+        #   index 1 → 标注统计
+        #   index 2 → 模型训练
+        #   index 3 → 自动标注
         self.pages = {
-            "video": VideoFramePage(),
-            "dedup": ImageDeduplicatePage(),
-            "annotation": DataAnnotationPage(),
-            "training": ModelTrainingPage(),
-            "auto_annotate": AutoAnnotatePage(),
+            "video": VideoFramePage(ctx=self.ctx),
+            "annotation": DataAnnotationPage(ctx=self.ctx),
+            "training": ModelTrainingPage(ctx=self.ctx),
+            "auto_annotate": AutoAnnotatePage(ctx=self.ctx),
         }
+
         for page in self.pages.values():
             self.stacked.addWidget(page)
         layout.addWidget(self.stacked, 1)
@@ -461,6 +470,7 @@ class MainWindow(QMainWindow):
         self.work_dir_edit = QLineEdit()
         self.work_dir_edit.setPlaceholderText("选择工作环境目录，后续选路径将默认从此处开始")
         self.work_dir_edit.editingFinished.connect(self._save_work_dir)
+        self.work_dir_edit.textChanged.connect(self.ctx.set_work_dir)
         wd_row.addWidget(self.work_dir_edit, 1)
         wd_btn = SecondaryButton("浏览")
         wd_btn.clicked.connect(self._browse_work_dir)
@@ -475,8 +485,12 @@ class MainWindow(QMainWindow):
         py_lbl.setFont(bold)
         py_row.addWidget(py_lbl)
         self.python_env_edit = QLineEdit()
-        self.python_env_edit.setPlaceholderText("选择 Python 可执行文件，脚本将通过该环境运行")
+        self.python_env_edit.setPlaceholderText(
+            "选择 Python 可执行文件（推荐 /home/zh/.anaconda3/envs/vision/bin/python），"
+            "脚本将通过该环境运行"
+        )
         self.python_env_edit.editingFinished.connect(self._save_python_env)
+        self.python_env_edit.textChanged.connect(self.ctx.set_python_env)
         py_row.addWidget(self.python_env_edit, 1)
         py_btn = SecondaryButton("浏览")
         py_btn.clicked.connect(self._browse_python_env)
@@ -495,12 +509,8 @@ class MainWindow(QMainWindow):
         if path:
             self.work_dir_edit.setText(path)
             self._save_work_dir()
-            # 同步到历史目录列表
-            recent = self._load_recent_dirs()
-            if path in recent:
-                recent.remove(path)
-            recent.insert(0, path)
-            self._save_recent_dirs(recent[:MAX_RECENT])
+            # 同步到历史目录列表（去重 + 截断由 settings 模块统一处理）
+            settings.promote_recent_dir(path)
 
     def _browse_python_env(self):
         start = self.python_env_edit.text().strip() or str(Path.home())
@@ -527,41 +537,18 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
     # ------------------------------------------------------------------
-    # 设置持久化
+    # 设置持久化（统一通过 gui.settings 封装的 QSettings 句柄读写）
     # ------------------------------------------------------------------
 
-    def _settings(self) -> QSettings:
-        return QSettings("visionHelper", "MainWindow")
-
     def _load_settings(self):
-        s = self._settings()
-        self.work_dir_edit.setText(s.value("work_dir", "", str))
-        self.python_env_edit.setText(s.value("python_env", "", str))
+        self.work_dir_edit.setText(settings.load_work_dir())
+        self.python_env_edit.setText(settings.load_python_env())
 
     def _save_work_dir(self):
-        self._settings().setValue("work_dir", self.work_dir_edit.text().strip())
+        settings.save_work_dir(self.work_dir_edit.text())
 
     def _save_python_env(self):
-        self._settings().setValue("python_env", self.python_env_edit.text().strip())
-
-    def _load_recent_dirs(self) -> List[str]:
-        raw = self._settings().value(RECENT_WORK_DIRS_KEY, [], list)
-        if not raw:
-            return []
-        # QSettings 在某些平台返回单字符串，统一转换为 list[str]
-        if isinstance(raw, str):
-            return [raw]
-        return [str(d) for d in raw if d]
-
-    def _save_recent_dirs(self, dirs: List[str]):
-        cleaned: List[str] = []
-        seen = set()
-        for d in dirs or []:
-            if not d or d in seen:
-                continue
-            seen.add(d)
-            cleaned.append(d)
-        self._settings().setValue(RECENT_WORK_DIRS_KEY, cleaned[:MAX_RECENT])
+        settings.save_python_env(self.python_env_edit.text())
 
 
 def main():

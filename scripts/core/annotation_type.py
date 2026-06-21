@@ -3,7 +3,7 @@
 """
 标注类型判断工具。
 
-根据 LabelMe JSON 标注文件的内容与文件系统最后修改时间，判断一张图片的
+根据 X-AnyLabeling JSON 标注文件的内容与文件系统最后修改时间，判断一张图片的
 标注属于以下三类之一：
 
 - 手动标注（manual）：不携带 ``auto_annotated_time`` 字段的标注。
@@ -13,7 +13,7 @@
   且 JSON 文件的最后修改时间与该字段值的差距超过 2 秒。
 
 用法示例：
-    from scripts.annotation_type import AnnotationType, AnnotationTypeChecker
+    from scripts.core.annotation_type import AnnotationType, AnnotationTypeChecker
 
     checker = AnnotationTypeChecker()
     ann_type = checker.check_file("/path/to/image.json")
@@ -37,7 +37,7 @@ class AnnotationType(Enum):
 
 class AnnotationTypeChecker:
     """
-    判断 LabelMe 标注文件属于手动标注、自动标注还是自动标注并手动矫正。
+    判断 X-AnyLabeling 标注文件属于手动标注、自动标注还是自动标注并手动矫正。
 
     判断规则：
         1. 手动标注：JSON 中不存在 ``auto_annotated_time`` 字段。
@@ -69,7 +69,18 @@ class AnnotationTypeChecker:
 
     @classmethod
     def _parse_time(cls, value: str) -> Optional[datetime]:
-        """将 ``auto_annotated_time`` 字符串解析为 datetime 对象。"""
+        """
+        将 ``auto_annotated_time`` 字符串解析为 datetime 对象。
+
+        优先尝试 ISO-8601 格式（``datetime.fromisoformat``，兼容 ``2024-01-02T03:04:05``
+        以及带毫秒、时区的写法），失败后回退到固定 ``%Y-%m-%d %H:%M:%S`` 格式。
+        """
+        if not isinstance(value, str):
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            pass
         try:
             return datetime.strptime(value, cls._TIME_FORMAT)
         except (ValueError, TypeError):
@@ -84,7 +95,7 @@ class AnnotationTypeChecker:
         根据标注字典与文件最后修改时间判断标注类型。
 
         参数:
-            annotation: LabelMe JSON 解析后的字典。
+            annotation: X-AnyLabeling JSON 解析后的字典。
             json_mtime: JSON 文件的最后修改时间。可传入 datetime 对象或
                 Unix 时间戳（秒）。如未提供，则仅根据字典中是否存在
                 ``auto_annotated_time`` 字段判断，存在则返回
@@ -120,7 +131,7 @@ class AnnotationTypeChecker:
         根据 JSON 文件路径判断标注类型。
 
         参数:
-            json_path: LabelMe 标注文件路径。
+            json_path: X-AnyLabeling 标注文件路径。
 
         返回:
             对应的 ``AnnotationType`` 枚举值。
@@ -160,6 +171,8 @@ class AnnotationTypeChecker:
         if not image_path.is_file():
             raise FileNotFoundError(f"图片文件不存在: {image_path}")
 
+        # 形如 ``foo.tar.gz`` 的多后缀图片名（极少出现，但 with_suffix 只替换最后一段，
+        # 仍然安全）；此处保留与图片 stem 同名的 ``<stem>.json`` 约定。
         json_path = image_path.with_suffix(".json")
         if not json_path.is_file():
             return AnnotationType.MANUAL

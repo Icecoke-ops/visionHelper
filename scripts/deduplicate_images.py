@@ -1,260 +1,215 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-使用 ViT 模型对文件夹中的相似图片进行去重。
+图片去重工具 CLI 门面（ViT / pHash）。
 
-该模块暴露以下核心方法：
-    - deduplicate(folder, threshold=0.95, delete=False, move_to=None,
-                  model_name="google/vit-base-patch16-224", batch_size=8)
+实际实现位于 :mod:`scripts.core.deduplicate_images`，本模块仅负责：
 
-用法示例：
-    from deduplicate_images import deduplicate
-    deduplicate("/path/to/images", threshold=0.95, delete=True)
+1. 命令行参数解析；
+2. 调用前做 **轻量参数预校验**（阈值范围、互斥选项、批大小、哈希尺寸等）；
+3. 统一异常捕获，给出友好的中文提示并返回合适退出码；
+4. 对外 re-export 公开符号，保持向后兼容。
+
+注意：``import scripts.deduplicate_images`` 本身不会拉起 ``torch`` /
+``transformers``，重依赖仅在调用 :func:`deduplicate` / :func:`load_model`
+等核心实现时按需加载。
+
+用法::
+
+    python -m scripts.deduplicate_images <folder> [options]
+
+例（pHash 后端，快速去重）::
+
+    python -m scripts.deduplicate_images ./images --backend phash --threshold 0.92
+
+例（ViT 后端，更高精度但更慢）::
+
+    python -m scripts.deduplicate_images ./images --backend vit \\
+        --model google/vit-base-patch16-224 --batch-size 8 --threshold 0.95
 """
 
-import shutil
+from __future__ import annotations
+
+import argparse
+import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-import numpy as np
-import torch
-from PIL import Image
-from tqdm import tqdm
-from transformers import AutoImageProcessor, ViTModel
+from scripts.config import (
+    DEFAULT_PHASH_SIZE,
+    DEFAULT_VIT_BATCH_SIZE,
+    DEFAULT_VIT_MODEL,
+    SUPPORTED_DEDUP_BACKENDS,
+)
+from scripts.core.deduplicate_images import (
+    SUPPORTED_BACKENDS,
+    deduplicate,
+    extract_features_phash,
+    extract_features_vit,
+    find_duplicates,
+    list_images,
+    load_model,
+)
+from scripts.logging_utils import log
 
-# 支持的图片格式
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tiff", ".tif"}
-
-
-def list_images(folder: str) -> List[Path]:
-    """列出文件夹中所有支持的图片文件（不递归）。"""
-    folder = Path(folder)
-    if not folder.is_dir():
-        raise ValueError(f"路径不存在或不是目录: {folder}")
-
-    images = [
-        f for f in folder.iterdir()
-        if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS
-    ]
-    # 按文件名排序，保证结果稳定
-    images.sort(key=lambda x: x.name)
-    return images
-
-
-def load_model(model_name: str):
-    """加载 ViT 模型和图像处理器。"""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"使用设备: {device}")
-    print(f"正在加载模型: {model_name} ...")
-
-    processor = AutoImageProcessor.from_pretrained(model_name)
-    model = ViTModel.from_pretrained(model_name)
-    model.to(device)
-    model.eval()
-    return processor, model, device
+__all__ = [
+    "deduplicate",
+    "extract_features_vit",
+    "extract_features_phash",
+    "find_duplicates",
+    "list_images",
+    "load_model",
+    "SUPPORTED_BACKENDS",
+    "main",
+]
 
 
-@torch.no_grad()
-def extract_features(
-        image_paths: List[Path],
-        processor,
-        model,
-        device,
-        batch_size: int = 8,
-):
-    """批量提取图片特征向量。"""
-    features = []
-    for i in tqdm(range(0, len(image_paths), batch_size), desc="提取特征"):
-        batch_paths = image_paths[i: i + batch_size]
-        batch_images = []
-        for path in batch_paths:
-            try:
-                img = Image.open(path).convert("RGB")
-                batch_images.append(img)
-            except Exception as e:
-                print(f"[警告] 无法读取图片 {path}: {e}")
-                batch_images.append(None)
-
-        # 过滤掉读取失败的图片，但保留位置占位
-        valid_images = [img for img in batch_images if img is not None]
-        if not valid_images:
-            features.extend([None] * len(batch_paths))
-            continue
-
-        inputs = processor(images=valid_images, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        outputs = model(**inputs)
-        # 使用 [CLS] token 的输出作为图片特征
-        batch_features = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-
-        # 归一化特征向量
-        batch_features = batch_features / (
-                np.linalg.norm(batch_features, axis=1, keepdims=True) + 1e-12
-        )
-
-        # 将特征放回原来的位置
-        feat_iter = iter(batch_features)
-        for img in batch_images:
-            if img is None:
-                features.append(None)
-            else:
-                features.append(next(feat_iter))
-
-    return features
-
-
-def find_duplicates(features: List[Optional[np.ndarray]], threshold: float) -> Tuple[List[int], List[int]]:
-    """
-    使用余弦相似度查找重复图片。
-    返回保留图片的索引列表，以及被判定为重复的索引列表。
-    """
-    n = len(features)
-    keep = []
-    duplicate = []
-    # 记录每个索引是否已经被划分到某个重复组
-    visited = [False] * n
-
-    for i in range(n):
-        if features[i] is None or visited[i]:
-            continue
-
-        # 以第 i 张图片为基准，找到所有相似图片
-        group = [i]
-        visited[i] = True
-
-        for j in range(i + 1, n):
-            if features[j] is None or visited[j]:
-                continue
-            sim = float(np.dot(features[i], features[j]))
-            if sim >= threshold:
-                group.append(j)
-                visited[j] = True
-
-        # 保留组内第一张图片，其余视为重复
-        keep.append(group[0])
-        duplicate.extend(group[1:])
-
-    return keep, duplicate
-
-
-def deduplicate(
-        folder: str,
-        threshold: float = 0.95,
-        delete: bool = False,
-        move_to: Optional[str] = None,
-        model_name: str = "google/vit-base-patch16-224",
-        batch_size: int = 8,
-) -> dict:
-    """
-    对文件夹中的相似图片进行去重。
-
-    参数:
-        folder: 待处理图片所在的文件夹路径。
-        threshold: 相似度阈值，默认 0.95。余弦相似度大于该值视为重复。
-        delete: 是否删除重复图片，默认 False。
-        move_to: 将重复图片移动到指定目录。与 delete 互斥。
-        model_name: 使用的 ViT 模型名称。
-        batch_size: 特征提取的批大小。
-
-    返回:
-        包含 keep（保留图片路径列表）和 duplicates（重复图片路径列表）的字典。
-    """
-    if not (0 <= threshold <= 1):
-        raise ValueError("阈值必须在 [0, 1] 之间")
-
-    if delete and move_to:
-        raise ValueError("delete 和 move_to 不能同时为 True/非空")
-
-    image_paths = list_images(folder)
-    if not image_paths:
-        print(f"文件夹中没有找到支持的图片: {folder}")
-        return {"keep": [], "duplicates": []}
-
-    print(f"共找到 {len(image_paths)} 张图片")
-
-    processor, model, device = load_model(model_name)
-    features = extract_features(image_paths, processor, model, device, batch_size=batch_size)
-
-    keep_indices, duplicate_indices = find_duplicates(features, threshold)
-
-    keep_paths = [image_paths[i] for i in keep_indices]
-    duplicate_paths = [image_paths[i] for i in duplicate_indices]
-
-    print(f"\n保留图片: {len(keep_paths)} 张")
-    print(f"重复图片: {len(duplicate_paths)} 张")
-
-    if duplicate_paths:
-        print("\n重复图片列表:")
-        for path in duplicate_paths:
-            print(f"  - {path}")
-
-        if move_to:
-            move_dir = Path(move_to)
-            move_dir.mkdir(parents=True, exist_ok=True)
-            for src in duplicate_paths:
-                dst = move_dir / src.name
-                # 如果目标文件已存在，添加序号后缀
-                counter = 1
-                stem = dst.stem
-                suffix = dst.suffix
-                while dst.exists():
-                    dst = move_dir / f"{stem}_{counter}{suffix}"
-                    counter += 1
-                shutil.move(str(src), str(dst))
-            print(f"\n已将 {len(duplicate_paths)} 张重复图片移动到: {move_dir}")
-        elif delete:
-            for src in duplicate_paths:
-                src.unlink()
-            print(f"\n已删除 {len(duplicate_paths)} 张重复图片。")
-        else:
-            print("\n未指定 delete 或 move_to，仅列出重复图片，未执行任何操作。")
-
-    return {"keep": keep_paths, "duplicates": duplicate_paths}
-
-
-if __name__ == "__main__":
-    # 提供简单的命令行入口，便于快速测试
-    import argparse
-
-    parser = argparse.ArgumentParser(description="ViT 图片去重工具")
+def _build_parser() -> argparse.ArgumentParser:
+    """构造命令行参数解析器。"""
+    parser = argparse.ArgumentParser(
+        prog="python -m scripts.deduplicate_images",
+        description=(
+            "图片去重工具：基于 ViT 特征或感知哈希（pHash）查找相似图片，"
+            "可选择仅检测、删除或移动到指定目录。"
+        ),
+    )
     parser.add_argument("folder", type=str, help="待处理图片所在的文件夹路径")
     parser.add_argument(
         "--threshold",
         type=float,
         default=0.95,
-        help="相似度阈值，默认 0.95。",
+        help="相似度阈值（0~1，越高越严格），默认 0.95。",
     )
     parser.add_argument(
         "--delete",
         action="store_true",
-        help="删除重复图片。",
+        help="直接删除重复图片（与 --move-to 互斥）。",
     )
     parser.add_argument(
         "--move-to",
         type=str,
         default=None,
-        help="将重复图片移动到指定目录。",
+        help="将重复图片移动到指定目录（与 --delete 互斥，目标目录不存在会自动创建）。",
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="vit",
+        choices=sorted(SUPPORTED_DEDUP_BACKENDS),
+        help="特征后端：vit=高精度但需要 GPU/较慢；phash=快速但仅适合明显重复。默认 vit。",
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="google/vit-base-patch16-224",
-        help="使用的 ViT 模型名称。",
+        default=DEFAULT_VIT_MODEL,
+        help=f"使用的 ViT/DINOv2 模型名称（仅 backend=vit 时生效），默认 {DEFAULT_VIT_MODEL}。",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=8,
-        help="特征提取的批大小。",
+        default=DEFAULT_VIT_BATCH_SIZE,
+        help=(
+            f"特征提取的批大小（必须为正整数，仅 backend=vit 时生效），"
+            f"默认 {DEFAULT_VIT_BATCH_SIZE}。"
+        ),
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--hash-size",
+        type=int,
+        default=DEFAULT_PHASH_SIZE,
+        help=(
+            f"pHash 哈希尺寸（必须为正整数；向量维度 = hash_size**2；仅 "
+            f"backend=phash 时生效），默认 {DEFAULT_PHASH_SIZE}。"
+        ),
+    )
+    return parser
 
-    deduplicate(
-        folder=args.folder,
-        threshold=args.threshold,
-        delete=args.delete,
-        move_to=args.move_to,
-        model_name=args.model,
-        batch_size=args.batch_size,
-    )
+
+def _validate_args(args: argparse.Namespace) -> None:
+    """对命令行参数做友好的预校验。"""
+    folder = Path(args.folder)
+    if not folder.exists():
+        raise ValueError(f"目录不存在：{args.folder}")
+    if not folder.is_dir():
+        raise ValueError(f"路径不是目录：{args.folder}")
+
+    if not (0.0 < args.threshold <= 1.0):
+        raise ValueError(
+            f"--threshold 必须在 (0, 1] 之间，当前为 {args.threshold}"
+        )
+
+    # --delete 与 --move-to 互斥
+    if args.delete and args.move_to:
+        raise ValueError("--delete 与 --move-to 不能同时指定，请二选一。")
+
+    # --move-to 必须可写
+    if args.move_to:
+        move_to = Path(args.move_to)
+        if move_to.exists() and not move_to.is_dir():
+            raise ValueError(f"--move-to 目标已存在但不是目录：{args.move_to}")
+
+    if args.backend == "vit":
+        if args.batch_size is not None and args.batch_size < 1:
+            raise ValueError(f"--batch-size 必须为正整数，当前为 {args.batch_size}")
+    elif args.backend == "phash":
+        if args.hash_size is not None and args.hash_size < 1:
+            raise ValueError(f"--hash-size 必须为正整数，当前为 {args.hash_size}")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """命令行入口。
+
+    参数:
+        argv: 命令行参数列表（不含程序名），默认从 ``sys.argv[1:]`` 读取。
+
+    返回:
+        进程退出码：0 表示成功；2 表示参数非法；1 表示运行时错误；130 表示用户中断。
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        _validate_args(args)
+    except ValueError as exc:
+        log(f"[参数错误] {exc}", stream=sys.stderr)
+        return 2
+
+    try:
+        result = deduplicate(
+            folder=args.folder,
+            threshold=args.threshold,
+            delete=args.delete,
+            move_to=args.move_to,
+            model_name=args.model,
+            batch_size=args.batch_size,
+            backend=args.backend,
+            hash_size=args.hash_size,
+        )
+    except KeyboardInterrupt:
+        log("[已取消] 用户中断，未对已处理图片造成不可逆变更。", stream=sys.stderr)
+        return 130
+    except (ValueError, FileNotFoundError) as exc:
+        log(f"[错误] {exc}", stream=sys.stderr)
+        return 2
+    except ImportError as exc:
+        # 主要针对 backend=vit 时缺失 torch / transformers 的情况
+        log(
+            f"[依赖缺失] {exc}\n"
+            f"提示：使用 --backend vit 需要安装 torch / transformers；"
+            f"或改用 --backend phash 以避免该依赖。",
+            stream=sys.stderr,
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        log(f"[错误] 图片去重失败：{exc}", stream=sys.stderr)
+        return 1
+
+    if isinstance(result, dict):
+        keep_n = len(result.get("keep", []) or [])
+        dup_n = len(result.get("duplicates", []) or [])
+        log(f"[完成] 保留 {keep_n} 张，识别重复 {dup_n} 张。")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

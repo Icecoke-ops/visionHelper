@@ -7,7 +7,7 @@
     - 自动扫描工作目录下 ``runs``（TRAIN_FOLDER）子目录中的训练模型
     - 通过下拉框选择模型（显示名称格式：训练名称-模型权重名称）
     - 设置置信度阈值、IoU 阈值、任务类型等参数
-    - 调用 ``scripts.auto_annotate`` 对未标注图片生成 LabelMe JSON 标注
+    - 调用 ``scripts.auto_annotate`` 对未标注图片生成 X-AnyLabeling JSON 标注（兼容 LabelMe）
     - 自动标注结果在 JSON 中写入 ``auto_annotated_time`` 字段
 
 视觉风格统一来自 :mod:`gui.theme` 与 :mod:`gui.widgets`，本模块不再
@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
 )
 
 from gui import theme
+from gui._proc import build_script_argv
 from gui.base_pages import BaseTaskPage
 from gui.config import IMAGES_FOLDER, TRAIN_FOLDER
 from gui.widgets import (
@@ -34,7 +35,6 @@ from gui.widgets import (
     HSeparator,
     LabeledDoubleSpinBox,
     SecondaryButton,
-    SectionTitle,
     SuccessButton,
 )
 # 注意：不要在模块顶层 import scripts.api，避免在 PyInstaller 打包态下
@@ -45,14 +45,12 @@ from gui.widgets import (
 class AutoAnnotatePage(BaseTaskPage):
     """自动标注页面：选择模型并对未标注图片进行自动标注。"""
 
-    def __init__(self, parent: QWidget = None):
-        super().__init__(parent)
+    def __init__(self, parent: QWidget = None, ctx=None):
+        super().__init__(parent, ctx=ctx)
         self._build_form()
 
     def _build_form(self):
         # ===== 模型选择 =====
-        self.content_layout.addWidget(SectionTitle("模型选择"))
-
         model_widget = QWidget()
         model_row = QHBoxLayout(model_widget)
         model_row.setContentsMargins(0, 0, 0, 0)
@@ -77,8 +75,6 @@ class AutoAnnotatePage(BaseTaskPage):
         self._add_widget_row("模型路径：", self.model_path_edit)
 
         # ===== 任务参数 =====
-        self.content_layout.addWidget(SectionTitle("任务参数"))
-
         self.task_combo = QComboBox()
         self.task_combo.addItem("目标检测（detect）", "detect")
         self.task_combo.addItem("旋转框（obb）", "obb")
@@ -178,32 +174,21 @@ class AutoAnnotatePage(BaseTaskPage):
 
     def _run_auto_annotate(self):
         """收集参数并启动自动标注子进程。"""
-        work_dir = self._work_dir()
-        if not work_dir:
-            QMessageBox.warning(self, "参数缺失", "请选择工作目录")
+        work_dir = self._require_work_dir()
+        if work_dir is None:
             return
 
-        image_dir = str(Path(work_dir) / IMAGES_FOLDER)
-        model_path = self.model_path_edit.text().strip()
-        if not model_path:
-            QMessageBox.warning(self, "参数缺失", "请选择模型")
+        image_dir = self._require_existing_dir(
+            str(work_dir / IMAGES_FOLDER), "图片目录"
+        )
+        if image_dir is None:
             return
 
-        if not Path(work_dir).is_dir():
-            QMessageBox.warning(self, "路径错误", f"工作目录不存在：{work_dir}")
+        model_path = self._require_existing_file(
+            self.model_path_edit.text().strip(), "模型文件"
+        )
+        if model_path is None:
             return
-        if not Path(image_dir).is_dir():
-            QMessageBox.warning(self, "路径错误", f"图片目录不存在：{image_dir}")
-            return
-
-        if not Path(model_path).is_file():
-            QMessageBox.warning(self, "路径错误", f"模型文件不存在：{model_path}")
-            return
-
-        task = self.task_combo.currentData()
-        threshold = self.threshold_spin.value()
-        iou = self.iou_spin.value()
-        suffix = self.suffix_edit.text().strip()
 
         include_unannotated = self.include_unannotated_cb.isChecked()
         include_auto = self.include_auto_cb.isChecked()
@@ -220,25 +205,19 @@ class AutoAnnotatePage(BaseTaskPage):
             )
             return
 
-        arguments = [
-            "-m", "scripts.auto_annotate",
+        arguments = build_script_argv(
+            "scripts.auto_annotate",
             image_dir,
             model_path,
-            "--threshold", f"{threshold:.4f}",
-            "--task", task,
-            "--iou", f"{iou:.4f}",
-        ]
-        if suffix:
-            arguments.extend(["--suffix", suffix])
-        if include_unannotated:
-            arguments.append("--include-unannotated")
-        if include_auto:
-            arguments.append("--include-auto")
-        if include_auto_corrected:
-            arguments.append("--include-auto-corrected")
-        if include_manual:
-            arguments.append("--include-manual")
-
+            threshold=f"{self.threshold_spin.value():.4f}",
+            task=self.task_combo.currentData(),
+            iou=f"{self.iou_spin.value():.4f}",
+            suffix=self.suffix_edit.text().strip() or None,
+            include_unannotated=include_unannotated,
+            include_auto=include_auto,
+            include_auto_corrected=include_auto_corrected,
+            include_manual=include_manual,
+        )
         self._start_subprocess(arguments, title="自动标注")
 
     def on_page_shown(self):

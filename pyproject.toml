@@ -1,0 +1,13 @@
+# visionHelper 项目配置
+#
+# 当前仅用于聚合 pytest 等工具的配置；项目本身仍以脚本方式运行，
+# 不通过 pyproject.toml 安装。
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-q"
+# 让 PyQt / GUI 相关的告警不影响测试输出
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

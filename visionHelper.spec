@@ -40,7 +40,7 @@ block_cipher = None
 hidden_imports = collect_submodules("gui")
 
 # 运行期 GUI 会把同级 ``scripts/`` 源码目录加入 ``sys.path``，并 import 其中
-# 的轻量子模块（如 ``scripts._common`` / ``scripts.annotation_type``）。
+# 的轻量子模块（如 ``scripts._common`` / ``scripts.core.annotation_type``）。
 # 这些源码会用到一批标准库（json / csv / shutil / subprocess / hashlib /
 # argparse 等），但 GUI 自身代码并未触发这些 import，导致 PyInstaller
 # 默认不会把它们收进 PYZ，运行期就会出现 ``ModuleNotFoundError: No module

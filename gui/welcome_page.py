@@ -34,11 +34,11 @@ from PyQt5.QtWidgets import (
 )
 
 from gui import theme
+from gui.settings import MAX_RECENT_WORK_DIRS as MAX_RECENT
 from gui.widgets import IconButton, LinkButton, MutedLabel, PrimaryButton
 
-
-# 历史目录最多保留多少项
-MAX_RECENT = 20
+# 历史目录最多保留多少项；统一从 :mod:`gui.settings` 引入，避免出现两份常量。
+__all__ = ["MAX_RECENT", "WelcomePage"]
 
 
 class WelcomePage(QWidget):

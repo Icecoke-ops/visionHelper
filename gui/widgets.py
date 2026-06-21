@@ -317,13 +317,12 @@ class StatItem(QWidget):
     Args:
         title: 左侧标题（如 "图片总数："）。
         value: 右侧数值字符串。
-        kind: 数值的颜色风格，可选 ``"primary"``（蓝） / ``"success"``（绿） /
-            ``"muted"``（灰），默认为 ``"success"``。
+        kind: 数值的颜色风格，可选 ``"success"``（绿） / ``"muted"``（灰），
+            默认为 ``"success"``。
         title_width: 标题列的固定宽度，便于多个 StatItem 上下对齐。
     """
 
     _KIND_VARIANT = {
-        "primary": "stat-value",
         "success": "stat-value-success",
     }
 
