@@ -26,22 +26,21 @@ os.environ.setdefault("VH_NO_PROGRESS", "1")
 
 
 @pytest.fixture()
-def make_image() -> Callable[[Path, int, int, tuple], Path]:
+def make_image() -> Callable[..., Path]:
     """生成一张测试图片（默认 32x32 纯色 PNG）。
 
     用法::
 
-        path = make_image(tmp_path / "a.jpg", 64, 64, (255, 0, 0))
+        path = make_image(tmp_path / "a.jpg", size=(64, 64), color=(255, 0, 0))
     """
     from PIL import Image
 
     def _factory(
         path: Path,
-        width: int = 32,
-        height: int = 32,
-        color: tuple = (128, 128, 128),
+        size: tuple[int, int] = (32, 32),
+        color: tuple[int, int, int] = (128, 128, 128),
     ) -> Path:
-        img = Image.new("RGB", (width, height), color=color)
+        img = Image.new("RGB", size, color=color)
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(path)
         return path

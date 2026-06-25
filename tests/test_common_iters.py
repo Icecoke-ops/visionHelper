@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""验证 ``scripts._common`` 中的图片/标注迭代器与发现工具。"""
+"""验证 ``scripts.common.utils`` 中的图片/标注迭代器与发现工具。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from scripts._common import (
+from scripts.common.utils import (
     discover_trained_models,
     is_annotation_file,
     is_image_file,

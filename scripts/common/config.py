@@ -16,7 +16,7 @@
    绝不会被 GUI 引用，也不要 import ``gui``。这样 GUI 能独立打包，
    ``scripts`` 也能在没有 PySide6 的环境下被调用。
 
-希望从这里读取常量的代码应使用形如 ``from scripts.config import IMAGE_EXTENSIONS``
+希望从这里读取常量的代码应使用形如 ``from scripts.common.config import IMAGE_EXTENSIONS``
 的明确路径，便于一眼定位来源。
 """
 
@@ -45,7 +45,7 @@ SUPPORTED_TASKS: FrozenSet[str] = frozenset({"detect", "obb", "segment", "classi
 # annotation_stats CLI 输出协议
 # --------------------------------------------------------------------------- #
 
-#: ``python -m scripts.annotation_stats`` 在 stdout 中输出结果 JSON 块时使用
+#: ``python scripts/vh.py datasets stats`` 在 stdout 中输出结果 JSON 块时使用
 #: 的起始 / 结束标记，GUI 通过这两个标记定位并提取 JSON。
 STATS_RESULT_BEGIN_MARKER: str = "===VH_STATS_BEGIN==="
 STATS_RESULT_END_MARKER: str = "===VH_STATS_END==="
@@ -143,6 +143,9 @@ TASK_MODEL_SUFFIX: Dict[str, str] = {
 # --------------------------------------------------------------------------- #
 # 进度日志
 # --------------------------------------------------------------------------- #
+
+#: 项目版本号。
+VERSION: str = "1.0.1"
 
 #: 通过该环境变量可整体关闭进度输出（保留首尾汇总）。
 PROGRESS_DISABLE_ENV: str = "VH_NO_PROGRESS"

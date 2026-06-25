@@ -11,7 +11,7 @@
   适配 GUI 子进程日志面板（不会用 ``\\r`` 覆盖整行，因而每条记录都能逐行
   正确显示）。
 
-模块只依赖标准库与 :mod:`scripts.config`，零重依赖，可在 GUI 进程中安全 import。
+模块只依赖标准库与 :mod:`scripts.common.config`，零重依赖，可在 GUI 进程中安全 import。
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import sys
 import time
 from typing import IO, Any, Optional
 
-from scripts.config import (
+from scripts.common.config import (
     PROGRESS_DEFAULT_MIN_INTERVAL,
     PROGRESS_DEFAULT_STEP_PERCENT,
     PROGRESS_DISABLE_ENV,
@@ -56,12 +56,12 @@ class ProgressLogger:
 
     为避免刷屏，仅在以下情况触发输出：
 
-    - 完成项数达到下一个百分比里程碑（默认每 :data:`scripts.config.PROGRESS_DEFAULT_STEP_PERCENT` 个百分点）；
+    - 完成项数达到下一个百分比里程碑（默认每 :data:`scripts.common.config.PROGRESS_DEFAULT_STEP_PERCENT` 个百分点）；
     - 距离上一次输出的时间间隔超过 ``min_interval`` 秒（默认
-      :data:`scripts.config.PROGRESS_DEFAULT_MIN_INTERVAL`）；
+      :data:`scripts.common.config.PROGRESS_DEFAULT_MIN_INTERVAL`）；
     - 首次（``0/total``）与最终（``total/total``）一定输出。
 
-    支持通过环境变量 :data:`scripts.config.PROGRESS_DISABLE_ENV`（``=1``）整体
+    支持通过环境变量 :data:`scripts.common.config.PROGRESS_DISABLE_ENV`（``=1``）整体
     关闭进度输出，但首尾两条仍会强制输出，便于知晓任务起止。
 
     典型用法::

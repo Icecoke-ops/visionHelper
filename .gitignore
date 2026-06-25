@@ -92,6 +92,9 @@ out/
 .vscode/
 *.code-workspace
 
+# Cline 项目规则（含本地环境路径等敏感信息）
+.clinerules
+
 # Vim / Emacs
 *.swp
 *.swo
@@ -130,21 +133,21 @@ log/
 *.old
 
 # 数据集/图片/视频（一般不入库，按需调整）
-datasets/
-dataset/
-data/
-images/
-videos/
-frames/
-output/
-outputs/
-runs/
-results/
+/datasets/
+/dataset/
+/data/
+/images/
+/videos/
+/frames/
+/output/
+/outputs/
+/runs/
+/results/
 
 # 标注与导出产物
-annotations/
-labels/
-exports/
+/annotations/
+/labels/
+/exports/
 *.cache
 
 # 模型权重文件
@@ -156,9 +159,9 @@ exports/
 *.h5
 *.ckpt
 *.pkl
-weights/
-models/
-checkpoints/
+/weights/
+/models/
+/checkpoints/
 
 # 配置中的本地敏感信息
 config.local.*

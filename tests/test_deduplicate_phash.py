@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-``scripts.deduplicate_images.deduplicate`` 的 phash 后端测试。
+``scripts.images.dedup.deduplicate`` 的 phash 后端测试。
 
 phash 后端仅依赖 Pillow + numpy（DCT 不可用时自动回退到 dHash），
 因此可以在没有 torch / transformers 的 CI 环境中跑通。
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from scripts.deduplicate_images import deduplicate
+from scripts.images.dedup import deduplicate
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@
   且 JSON 文件的最后修改时间与该字段值的差距超过 2 秒。
 
 用法示例：
-    from scripts.core.annotation_type import AnnotationType, AnnotationTypeChecker
+    from scripts.common.annotation_type import AnnotationType, AnnotationTypeChecker
 
     checker = AnnotationTypeChecker()
     ann_type = checker.check_file("/path/to/image.json")

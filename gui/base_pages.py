@@ -261,7 +261,7 @@ class BaseTaskPage(BasePage):
 
         子进程启动时会：
 
-        1. 将工作目录设置为 :func:`gui.config.app_root`，保证 ``-m scripts.xxx``
+        1. 将工作目录设置为 :func:`gui.config.app_root`，保证 ``scripts/vh.py``
            能正确定位到 ``scripts`` 包；
         2. 将 ``app_root`` 注入到子进程的 ``PYTHONPATH``，作为第二重保险，
            即使用户在调用前手动改过 ``cwd`` 也不会影响脚本定位。

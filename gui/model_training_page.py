@@ -197,7 +197,7 @@ class ModelTrainingPage(BaseTaskPage):
             return
 
         try:
-            from scripts._common import discover_trained_models
+            from scripts.common.utils import discover_trained_models
 
             trained_models = discover_trained_models(runs_dir)
         except Exception:
@@ -247,9 +247,9 @@ class ModelTrainingPage(BaseTaskPage):
         self.dataset_dir_edit.setText(str(output_dir))
 
         arguments = build_script_argv(
-            "scripts.export_yolo_dataset",
-            input_dir,
-            output_dir,
+            "datasets", "export",
+            input=input_dir,
+            output=output_dir,
             task=self.task_combo.currentData(),
             train_ratio=f"{train_ratio:.4f}",
             test_ratio=f"{test_ratio:.4f}",
@@ -280,8 +280,8 @@ class ModelTrainingPage(BaseTaskPage):
         project = str(Path(work_dir) / TRAIN_FOLDER) if work_dir else None
 
         arguments = build_script_argv(
-            "scripts.train_model",
-            yaml_path,
+            "train", "run",
+            data=yaml_path,
             task=self.task_combo.currentData(),
             model=self.model_edit.text().strip() or "yolov8n",
             epochs=self.epochs_spin.value(),

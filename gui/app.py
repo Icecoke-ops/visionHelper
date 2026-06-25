@@ -8,7 +8,7 @@ visionHelper GUI 主程序。
 各功能子页面）。
 
 启动方式：
-    /home/zh/.anaconda3/envs/vision/bin/python -m gui.app
+    python -m gui.app
 """
 
 import os
@@ -486,7 +486,7 @@ class MainWindow(QMainWindow):
         py_row.addWidget(py_lbl)
         self.python_env_edit = QLineEdit()
         self.python_env_edit.setPlaceholderText(
-            "选择 Python 可执行文件（推荐 /home/zh/.anaconda3/envs/vision/bin/python），"
+            "选择 Python 可执行文件（例如 /path/to/venv/bin/python），"
             "脚本将通过该环境运行"
         )
         self.python_env_edit.editingFinished.connect(self._save_python_env)

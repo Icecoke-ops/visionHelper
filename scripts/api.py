@@ -163,7 +163,7 @@ class VideoAPI:
             raise ValueError(f"frame_step 必须是 >=1 的整数，当前值: {frame_step}")
         _require_in_range(quality, "quality", 1, 100)
 
-        from scripts.core.extract_video_frames import extract_video_frames
+        from scripts.images.import_ import extract_video_frames
 
         return extract_video_frames(
             input_video=input_video,
@@ -205,7 +205,7 @@ class AnnotationAPI:
         """
         _require_existing_dir(folder, "folder")
 
-        from scripts.core.annotation_stats import collect_annotation_stats
+        from scripts.datasets.stats import collect_annotation_stats
 
         return collect_annotation_stats(folder)
 
@@ -226,7 +226,7 @@ class AnnotationAPI:
         """
         _require_existing_dir(folder, "folder")
 
-        from scripts.core.annotation_stats import collect_annotation_label_stats
+        from scripts.datasets.stats import collect_annotation_label_stats
 
         return collect_annotation_label_stats(folder)
 
@@ -239,7 +239,7 @@ class AnnotationAPI:
             timeout: Optional[float] = None,
     ) -> Dict[str, object]:
         """
-        通过子进程调用 ``python -m scripts.annotation_stats`` 完成标注统计。
+        通过子进程调用 ``python scripts/vh.py datasets stats`` 完成标注统计。
 
         与 :meth:`annotation_stats` / :meth:`annotation_label_stats` 的区别：
 
@@ -254,7 +254,7 @@ class AnnotationAPI:
             python_executable: 用于运行子进程的 Python 解释器路径。
                 默认使用当前进程的 ``sys.executable``。
             cwd: 子进程工作目录。默认使用项目根目录，
-                以保证 ``-m scripts.annotation_stats`` 能够定位到包。
+                以保证 ``scripts/vh.py datasets stats`` 能够定位到包。
             timeout: 超时秒数，``None`` 表示不限制。
 
         返回:
@@ -283,9 +283,10 @@ class AnnotationAPI:
         if cwd is None:
             cwd = str(Path(__file__).resolve().parent.parent)
 
-        cmd: List[str] = [executable, "-m", "scripts.annotation_stats", folder]
-        if not include_label_stats:
-            cmd.append("--no-label-stats")
+        cmd: List[str] = [executable, "scripts/vh.py", "datasets", "stats", "--input", folder]
+        if include_label_stats:
+            cmd.append("--label-stats")
+        cmd.append("--json")
 
         completed = subprocess.run(
             cmd,
@@ -308,7 +309,7 @@ class AnnotationAPI:
                 f"stdout:\n{stdout}\nstderr:\n{stderr}"
             )
 
-        from scripts.core.annotation_stats import parse_machine_block
+        from scripts.datasets.stats import parse_machine_block
 
         try:
             payload = parse_machine_block(stdout)
@@ -403,7 +404,7 @@ class AnnotationAPI:
                 "include_auto_corrected / include_manual 至少一个为 True）"
             )
 
-        from scripts.core.auto_annotate import auto_annotate
+        from scripts.datasets.auto import auto_annotate
 
         return auto_annotate(
             work_dir=work_dir,
@@ -457,7 +458,7 @@ class AnnotationAPI:
                 "include_auto_corrected / include_manual 至少一个为 True）"
             )
 
-        from scripts.core.clear_annotations import clear_annotations
+        from scripts.datasets.clear import clear_annotations
 
         return clear_annotations(
             folder=folder,
@@ -494,7 +495,7 @@ class AnnotationAPI:
                 f"tolerance_seconds 必须 >= 0，当前值: {tolerance_seconds}"
             )
 
-        from scripts.core.annotation_type import AnnotationTypeChecker
+        from scripts.common.annotation_type import AnnotationTypeChecker
 
         checker = AnnotationTypeChecker(tolerance_seconds=tolerance_seconds)
         return checker.check_file(json_path).value
@@ -525,7 +526,7 @@ class AnnotationAPI:
                 f"tolerance_seconds 必须 >= 0，当前值: {tolerance_seconds}"
             )
 
-        from scripts.core.annotation_type import AnnotationTypeChecker
+        from scripts.common.annotation_type import AnnotationTypeChecker
 
         checker = AnnotationTypeChecker(tolerance_seconds=tolerance_seconds)
         return checker.check_image_annotation(image_path).value
@@ -546,7 +547,7 @@ class AnnotationAPI:
         if not Path(runs_dir).expanduser().is_dir():
             return []
 
-        from scripts._common import discover_trained_models
+        from scripts.common.utils import discover_trained_models
 
         return discover_trained_models(runs_dir)
 
@@ -631,7 +632,7 @@ class TrainingAPI:
         if in_resolved == out_resolved:
             raise ValueError("input_dir 与 output_dir 不能为同一路径")
 
-        from scripts.core.export_yolo_dataset import export_yolo_dataset
+        from scripts.datasets.export import export_yolo_dataset
 
         return export_yolo_dataset(
             input_dir=input_dir,
@@ -685,7 +686,7 @@ class TrainingAPI:
             patience: 早停轮数，0 表示不启用早停，必须 >= 0，默认 100。
             resume: 是否从最近一次中断恢复训练，默认 False。
             optimizer: 优化器名称，可选值见
-                :data:`scripts.config.SUPPORTED_OPTIMIZERS`，默认 ``auto``。
+                :data:`scripts.common.config.SUPPORTED_OPTIMIZERS`，默认 ``auto``。
             lr0: 初始学习率，必须 > 0，默认 0.01。
             workers: DataLoader worker 数量，必须 >= 0，默认 8。
 
@@ -726,14 +727,14 @@ class TrainingAPI:
             raise ValueError(f"lr0 必须 > 0，当前值: {lr0}")
 
         # 懒读取支持的优化器集合，避免类定义阶段引入额外耦合。
-        from scripts.config import SUPPORTED_OPTIMIZERS
+        from scripts.common.config import SUPPORTED_OPTIMIZERS
         if optimizer not in SUPPORTED_OPTIMIZERS:
             raise ValueError(
                 f"不支持的优化器: {optimizer!r}，"
                 f"仅支持 {sorted(SUPPORTED_OPTIMIZERS)}"
             )
 
-        from scripts.core.train_model import train_model
+        from scripts.train.train import train_model
 
         return train_model(
             dataset_yaml=dataset_yaml,
@@ -833,7 +834,7 @@ class ImageAPI:
         if backend_norm == "vit":
             _require_non_empty_str(model_name, "model_name")
 
-        from scripts.core.deduplicate_images import deduplicate
+        from scripts.images.dedup import deduplicate
 
         return deduplicate(
             folder=folder,

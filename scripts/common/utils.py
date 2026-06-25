@@ -9,15 +9,15 @@
 确保打包后的 GUI 进程也能在不触发 ``scripts.api`` 的情况下直接 import。
 
 - 常量 :data:`IMAGE_EXTENSIONS` 与 :class:`ProgressLogger` 在此处仅作 **向后兼容
-  的 re-export**：实现已分别迁移到 :mod:`scripts.config` 与 :mod:`scripts.logging_utils`。
+  的 re-export**：实现已分别迁移到 :mod:`scripts.common.config` 与 :mod:`scripts.common.logging`。
 """
 
 import json
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
 
-from scripts.config import IMAGE_EXTENSIONS  # re-export，保持外部 import 兼容
-from scripts.logging_utils import ProgressLogger  # re-export，保持外部 import 兼容
+from scripts.common.config import IMAGE_EXTENSIONS  # re-export，保持外部 import 兼容
+from scripts.common.logging import ProgressLogger  # re-export，保持外部 import 兼容
 
 
 __all__ = [

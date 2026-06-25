@@ -9,8 +9,8 @@
 
 - 通过 ``working_dir`` 参数设置子进程工作目录；
 - 通过 ``extra_pythonpath`` 参数把额外目录注入到子进程的
-  ``PYTHONPATH`` 环境变量中，从而保证 ``python -m scripts.xxx`` 能在
-  任意启动位置（如双击 exe）下找到 ``scripts`` 包。
+  ``PYTHONPATH`` 环境变量中，从而保证 ``python scripts/vh.py <subcommand> <action> ...``
+  能在任意启动位置（如双击 exe）下找到 ``scripts`` 包。
 - 通过 ``log_dir`` + ``log_script_name`` 参数把整次运行的日志另存为
   ``<log_dir>/YYYYMMDD_HHMMSS_<script>.log`` 文件，方便事后追溯。
 
@@ -195,7 +195,7 @@ class RunLogDialog(QDialog):
                 parts.append(existing)
             env.insert("PYTHONPATH", os.pathsep.join(parts))
         # 让子进程的 stdout/stderr 不缓冲，避免日志大段延迟。
-        # 进度由 scripts._common.ProgressLogger 输出整行日志（不使用 \r 覆盖），
+        # 进度由 scripts.common.logging.ProgressLogger 输出整行日志（不使用 \r 覆盖），
         # 因此 GUI 日志面板能够正常显示进度。
         env.insert("PYTHONUNBUFFERED", "1")
         return env

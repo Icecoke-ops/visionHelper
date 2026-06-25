@@ -7,13 +7,14 @@
 将它们分别放在独立的白色卡片中：
 
     第一张卡片：视频抽帧
-        通过子进程调用 ``scripts.extract_video_frames`` 将视频按帧
-        间隔抽成图片，输出到工作目录下的 ``IMAGES_FOLDER``。
+        通过子进程调用 ``python scripts/vh.py images import --input <video>
+        --output <dir>`` 将视频按帧间隔抽成图片，输出到工作目录下的
+        ``IMAGES_FOLDER``。
 
     第二张卡片：图片去重
-        通过子进程调用 ``scripts.deduplicate_images`` 对工作目录下的
-        ``IMAGES_FOLDER`` 做基于 ViT 特征的相似度去重，重复图片移动到
-        隐藏回收站文件夹 ``RECYCLE_BIN_FOLDER`` 中。
+        通过子进程调用 ``python scripts/vh.py images dedup --input <folder>``
+        对工作目录下的 ``IMAGES_FOLDER`` 做基于 ViT 特征的相似度去重，
+        重复图片移动到隐藏回收站文件夹 ``RECYCLE_BIN_FOLDER`` 中。
 
 所有按钮 / 间距 / 颜色统一来自 :mod:`gui.theme` 与 :mod:`gui.widgets`。
 """
@@ -32,8 +33,8 @@ class VideoFramePage(BaseTaskPage):
     """视频抽帧 + 图片去重页面。
 
     页面包含两张相互独立的卡片：
-        - 顶部卡片：调用 ``scripts.extract_video_frames`` 执行视频抽帧；
-        - 底部卡片：调用 ``scripts.deduplicate_images`` 对抽帧结果做去重。
+        - 顶部卡片：调用 ``python scripts/vh.py images import`` 执行视频抽帧；
+        - 底部卡片：调用 ``python scripts/vh.py images dedup`` 对抽帧结果做去重。
 
     两个任务共享同一份"工作目录"配置：抽帧结果直接落到工作目录下的
     ``IMAGES_FOLDER``，去重任务也从该目录读取图片，形成"抽帧 → 去重"
@@ -113,9 +114,9 @@ class VideoFramePage(BaseTaskPage):
         output_dir = work_dir / IMAGES_FOLDER
 
         arguments = build_script_argv(
-            "scripts.extract_video_frames",
-            video_path,
-            output_dir,
+            "images", "import",
+            input=video_path,
+            output=output_dir,
             frame_step=self.frame_step_spin.value(),
             ext="jpg",
             prefix=self.prefix_edit.text() or "frame",
@@ -135,8 +136,8 @@ class VideoFramePage(BaseTaskPage):
             return
 
         arguments = build_script_argv(
-            "scripts.deduplicate_images",
-            work_dir / IMAGES_FOLDER,
+            "images", "dedup",
+            input=work_dir / IMAGES_FOLDER,
             threshold=threshold,
             model=self.dedup_model_edit.text() or "google/vit-base-patch16-224",
             batch_size=self.batch_size_spin.value(),

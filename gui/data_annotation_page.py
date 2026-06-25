@@ -56,11 +56,11 @@ XANYLABELING_RELEASES = "https://github.com/CVHub520/X-AnyLabeling/releases"
 
 
 def _build_script_env(root: str) -> dict:
-    """构造调用 ``python -m scripts.xxx`` 同步子进程时的环境变量。
+    """构造调用 ``python scripts/vh.py`` 同步子进程时的环境变量。
 
-    将 ``root`` 注入到 ``PYTHONPATH`` 头部，确保 ``-m scripts.xxx`` 在
-    打包/任意启动目录下都能定位到 ``scripts`` 包；同时设置
-    ``PYTHONUNBUFFERED=1`` 让子进程输出可以即时被捕获。
+    将 ``root`` 注入到 ``PYTHONPATH`` 头部，确保 ``scripts/vh.py`` 在打包/任意
+    启动目录下都能定位到 ``scripts`` 包；同时设置 ``PYTHONUNBUFFERED=1``
+    让子进程输出可以即时被捕获。
     """
     env = os.environ.copy()
     existing_pp = env.get("PYTHONPATH", "")
@@ -101,7 +101,7 @@ class DataAnnotationPage(BaseTaskPage):
     """数据标注页面：统计目录下的图片与标注信息。
 
     继承 :class:`BaseTaskPage` 以复用 ``_python_env()`` 等子进程相关辅助
-    方法（``_run_stats`` 通过子进程调用 ``scripts.annotation_stats``）。
+    方法（``_run_stats`` 通过子进程调用 ``python scripts/vh.py datasets stats``）。
     """
 
     def __init__(self, parent: QWidget = None, ctx=None):
@@ -294,15 +294,16 @@ class DataAnnotationPage(BaseTaskPage):
     def _run_stats(self):
         """执行统计并刷新界面结果。
 
-        通过 ``subprocess`` 调用 ``python -m scripts.annotation_stats`` 命令行，
-        从其标准输出中提取以 ``===VH_STATS_BEGIN===`` / ``===VH_STATS_END===``
-        包裹的 JSON 块并解析为统计结果，再回填到界面控件中。
+        通过 ``subprocess`` 调用 ``python scripts/vh.py datasets stats --input <folder>``
+        命令行，从其标准输出中提取以 ``===VH_STATS_BEGIN===`` /
+        ``===VH_STATS_END===`` 包裹的 JSON 块并解析为统计结果，再回填到
+        界面控件中。
         """
         folder = self._resolve_image_dir("要统计的图片目录")
         if not folder:
             return
 
-        # 组装子进程命令：python -m scripts.annotation_stats <folder> --label-stats
+        # 组装子进程命令：python scripts/vh.py datasets stats --input <folder> --label-stats
         python_exe = self._python_env()
         if not python_exe:
             # 打包态下若用户未配置 Python 环境，``_python_env()`` 会返回空串，
@@ -317,14 +318,16 @@ class DataAnnotationPage(BaseTaskPage):
         root = str(app_root())
         cmd = [
             python_exe,
-            "-m",
-            "scripts.annotation_stats",
+            "scripts/vh.py",
+            "datasets",
+            "stats",
+            "--input",
             folder,
             "--label-stats",
         ]
 
-        # 注入 PYTHONPATH，确保 ``-m scripts.annotation_stats`` 在打包/任意启动
-        # 目录下都能定位到 ``scripts`` 包。
+        # 注入 PYTHONPATH，确保 ``scripts/vh.py`` 在打包/任意启动目录下都能定位到
+        # ``scripts`` 包。
         env = _build_script_env(root)
 
         # 同步调用：标注统计是轻量操作，几百毫秒级别，无需异步日志窗口。
@@ -372,7 +375,7 @@ class DataAnnotationPage(BaseTaskPage):
 
         # 解析机器块
         try:
-            from scripts.annotation_stats import parse_machine_block
+            from scripts.datasets.stats import parse_machine_block
 
             payload = parse_machine_block(stdout)
         except Exception as exc:  # noqa: BLE001
@@ -430,7 +433,7 @@ class DataAnnotationPage(BaseTaskPage):
             return
 
         try:
-            from scripts.clear_annotations import clear_annotations
+            from scripts.datasets.clear import clear_annotations
 
             result = clear_annotations(
                 folder=folder,

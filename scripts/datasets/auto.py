@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-自动标注核心实现。
+YOLO 自动标注实现。
 
 使用 Ultralytics YOLO 模型对工作目录下的图片进行推理，将满足条件的结果
-保存为 X-AnyLabeling JSON 格式（兼容 LabelMe）：
+保存为 X-AnyLabeling JSON 格式（兼容 LabelMe）。本模块同时包含核心实现与
+``python scripts/vh.py datasets auto`` 命令行入口；``ultralytics`` 仅在调用
+:func:`auto_annotate` 时按需加载。
 
-- ``detect``  → 写入 ``shape_type="rectangle"`` 的 shapes
-- ``obb``     → 写入 ``shape_type="rotation"`` 的 shapes（4 个角点）
-- ``segment`` → 写入 ``shape_type="polygon"`` 的 shapes
-- ``classify``→ 仅刷新 JSON 顶层 ``flags`` 字典（单标签：top1 类别为 ``True``，
-                其余为 ``False``），不修改 shapes
+用法::
 
-自动标注生成的标注文件会额外携带 ``auto_annotated_time`` 字段；处理范围
-筛选支持四类（未标注 / 自动 / 自动矫正 / 手动）。
+    python scripts/vh.py datasets auto -i ./images -m ./best.pt -t detect -T 0.25
+    python scripts/vh.py datasets auto -i ./images -m ./best.pt -t detect -a -c
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from scripts._common import is_image_file
-from scripts.core.annotation_type import AnnotationType, AnnotationTypeChecker
-from scripts.config import (
+from scripts.common.annotation_type import AnnotationType, AnnotationTypeChecker
+from scripts.common.config import (
     AUTO_ANNOTATE_DEFAULT_BATCH_SIZE,
     DEFAULT_TOLERANCE_SECONDS,
     STATUS_AUTO,
@@ -34,14 +33,32 @@ from scripts.config import (
     STATUS_UNANNOTATED,
     SUPPORTED_TASKS,
 )
-from scripts.logging_utils import ProgressLogger, log
+from scripts.common.logging import ProgressLogger, log
+from scripts.common.utils import discover_trained_models, is_image_file
 
-__all__ = ["auto_annotate"]
+
+def _check_image_readable(image_path: Path) -> bool:
+    """使用 Pillow 预检图片是否可被正常读取。
+
+    对截断、损坏或格式错误的图片提前返回 False，避免在批量推理阶段
+    导致整个任务中断。本函数仅依赖 Pillow，不触发 ultralytics/torch。
+    """
+    try:
+        from PIL import Image, UnidentifiedImageError
+
+        with Image.open(image_path) as img:
+            img.load()
+        return True
+    except (OSError, UnidentifiedImageError, ValueError) as exc:
+        log(
+            f"[警告] 图片读取失败，已跳过 {image_path.name}: {exc}",
+            stream=sys.stderr,
+        )
+        return False
 
 
-# --------------------------------------------------------------------------- #
-# 推理结果转换辅助
-# --------------------------------------------------------------------------- #
+__all__ = ["auto_annotate", "main"]
+
 
 def _find_model_class_names(model) -> List[str]:
     """从 Ultralytics YOLO 模型中提取类别名称列表。"""
@@ -95,10 +112,16 @@ def _result_image_size(result, image_path: Path) -> Tuple[int, int]:
         except (TypeError, ValueError, IndexError):
             pass
 
-    from PIL import Image  # 延迟 import
+    from PIL import Image, UnidentifiedImageError  # 延迟 import
 
-    with Image.open(image_path) as img:
-        return img.size
+    try:
+        with Image.open(image_path) as img:
+            return img.size
+    except (OSError, UnidentifiedImageError) as exc:
+        raise RuntimeError(
+            f"无法读取图片尺寸 {image_path.name}: {exc}"
+        ) from exc
+
 
 
 def _build_annotation(
@@ -257,14 +280,7 @@ def _finalize_and_save(
         class_names: List[str],
         existing: Optional[dict],
 ) -> bool:
-    """
-    根据任务类型把推理结果落盘为 X-AnyLabeling JSON。
-
-    - detect / obb / segment：若无任何 shape 则跳过（返回 False）。
-    - classify：始终写入（即使无 top1，也会刷新为全 False 的 flags）。
-
-    返回 True 表示已写盘，False 表示已跳过。
-    """
+    """根据任务类型把推理结果落盘为 X-AnyLabeling JSON。"""
     image_size = _result_image_size(result, image_path)
 
     if task == "classify":
@@ -311,10 +327,6 @@ def _finalize_and_save(
     return True
 
 
-# --------------------------------------------------------------------------- #
-# 主流程
-# --------------------------------------------------------------------------- #
-
 def auto_annotate(
         work_dir: str,
         model_path: str,
@@ -330,11 +342,7 @@ def auto_annotate(
         tolerance_seconds: float = DEFAULT_TOLERANCE_SECONDS,
         batch_size: int = AUTO_ANNOTATE_DEFAULT_BATCH_SIZE,
 ) -> Dict[str, object]:
-    """
-    对工作目录下的图片进行自动标注（支持批量推理 + 流式结果）。
-
-    参数说明详见模块 docstring。
-    """
+    """对工作目录下的图片进行自动标注（支持批量推理 + 流式结果）。"""
     work_path = Path(work_dir)
     if not work_path.is_dir():
         raise ValueError(f"工作目录不存在: {work_dir}")
@@ -381,7 +389,6 @@ def auto_annotate(
     images = [p for p in work_path.iterdir() if is_image_file(p)]
     images.sort(key=lambda p: p.name)
 
-    # 先按 include 开关过滤出真正需要推理的图片，避免对跳过项也做 IO
     todo: List[Tuple[Path, Path, str, Optional[dict]]] = []
     skipped = 0
     for image_path in images:
@@ -416,7 +423,6 @@ def auto_annotate(
             "by_type": by_type,
         }
 
-    # 公共 predict 参数
     predict_kwargs: Dict[str, object] = {
         "device": device,
         "verbose": False,
@@ -428,29 +434,41 @@ def auto_annotate(
 
     progress = ProgressLogger(total=len(todo), desc="自动标注")
 
-    # 分批批量推理，按图片顺序消费流式结果
     for start in range(0, len(todo), batch_size):
         chunk = todo[start: start + batch_size]
-        sources = [str(item[0]) for item in chunk]
+
+        # 预检本批图片可读性，提前剔除截断/损坏图片，避免 predict 整批失败。
+        readable_chunk: List[Tuple[Path, Path, str, Optional[dict]]] = []
+        for item in chunk:
+            image_path = item[0]
+            if _check_image_readable(image_path):
+                readable_chunk.append(item)
+            else:
+                skipped += 1
+                progress.update(1)
+
+        if not readable_chunk:
+            continue
+
+        sources = [str(item[0]) for item in readable_chunk]
 
         try:
             results_iter = yolo_model.predict(source=sources, **predict_kwargs)
         except Exception as exc:
             log(f"[错误] 推理失败（批 {start // batch_size}）: {exc}")
-            for _image_path, _json_path, _status, _existing in chunk:
+            for _image_path, _json_path, _status, _existing in readable_chunk:
                 skipped += 1
                 progress.update(1)
             continue
 
-        # stream=True 时，predict 返回一个生成器，按 sources 顺序产出
         results_list = list(results_iter)
-        if len(results_list) != len(chunk):
+        if len(results_list) != len(readable_chunk):
             log(
                 f"[警告] 批量推理返回数量与输入不匹配："
-                f"{len(results_list)} vs {len(chunk)}（已尽力对齐前缀）"
+                f"{len(results_list)} vs {len(readable_chunk)}（已尽力对齐前缀）"
             )
 
-        for idx, (image_path, json_path, status, existing) in enumerate(chunk):
+        for idx, (image_path, json_path, status, existing) in enumerate(readable_chunk):
             if idx >= len(results_list):
                 skipped += 1
                 progress.update(1)
@@ -494,3 +512,192 @@ def auto_annotate(
         "annotated": annotated,
         "by_type": by_type,
     }
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """构造命令行参数解析器。"""
+    parser = argparse.ArgumentParser(
+        prog="python scripts/vh.py datasets auto",
+        description=(
+            "YOLO 自动标注工具：使用已训练模型为目录中的图片生成 X-AnyLabeling "
+            "JSON 标注，支持 detect / obb / segment / classify 4 种任务。"
+        ),
+    )
+    parser.add_argument(
+        "-i", "--input",
+        type=str,
+        required=True,
+        help="待标注图片所在的工作目录",
+    )
+    parser.add_argument(
+        "-m", "--model",
+        type=str,
+        required=True,
+        help="YOLO 模型权重文件路径（.pt）",
+    )
+    parser.add_argument(
+        "-T", "--threshold",
+        type=float,
+        default=0.25,
+        help="置信度阈值（0~1），默认 0.25（仅 detect/obb/segment 生效）",
+    )
+    parser.add_argument(
+        "-t", "--task",
+        type=str,
+        default="detect",
+        choices=sorted(SUPPORTED_TASKS),
+        help="任务类型：detect / obb / segment / classify，默认 detect",
+    )
+    parser.add_argument(
+        "--suffix",
+        type=str,
+        default="",
+        help="输出 JSON 文件名后缀（追加在 stem 之后），默认空",
+    )
+    parser.add_argument(
+        "-D", "--device",
+        type=str,
+        default=None,
+        help="推理设备，例如 0/cpu/0,1，默认自动选择",
+    )
+    parser.add_argument(
+        "-u", "--iou",
+        type=float,
+        default=0.45,
+        help="NMS IoU 阈值（0~1），默认 0.45（仅 detect/obb/segment 生效）",
+    )
+    parser.add_argument(
+        "--include-unannotated",
+        action="store_true",
+        help="处理未标注图片（4 个 include 开关全未指定时此项默认开启）",
+    )
+    parser.add_argument(
+        "-a", "--include-auto",
+        action="store_true",
+        help="处理已被自动标注的图片（会用新模型重新生成标注）",
+    )
+    parser.add_argument(
+        "-c", "--include-auto-corrected",
+        action="store_true",
+        help="处理自动标注后人工矫正过的图片（谨慎使用，会覆盖人工修改）",
+    )
+    parser.add_argument(
+        "-M", "--include-manual",
+        action="store_true",
+        help="处理纯手动标注的图片（极谨慎使用，会覆盖人工标注）",
+    )
+    parser.add_argument(
+        "--tolerance-seconds",
+        type=float,
+        default=DEFAULT_TOLERANCE_SECONDS,
+        help=f"判定自动 / 矫正的时间容差（秒），默认 {DEFAULT_TOLERANCE_SECONDS}",
+    )
+    parser.add_argument(
+        "-z", "--batch-size",
+        type=int,
+        default=AUTO_ANNOTATE_DEFAULT_BATCH_SIZE,
+        help=f"批量推理大小（必须为正整数），默认 {AUTO_ANNOTATE_DEFAULT_BATCH_SIZE}",
+    )
+    return parser
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    """对命令行参数做友好的预校验。"""
+    work_dir = Path(args.input)
+    if not work_dir.exists():
+        raise ValueError(f"工作目录不存在：{args.input}")
+    if not work_dir.is_dir():
+        raise ValueError(f"工作目录不是文件夹：{args.input}")
+
+    model_path = Path(args.model)
+    if not model_path.exists():
+        raise ValueError(f"模型权重文件不存在：{args.model}")
+    if not model_path.is_file():
+        raise ValueError(f"模型权重路径不是文件：{args.model}")
+    if model_path.suffix.lower() != ".pt":
+        log(
+            f"[警告] 模型文件后缀为 {model_path.suffix!r}，常规为 .pt，请确认无误。",
+            stream=sys.stderr,
+        )
+
+    if not (0.0 <= args.threshold <= 1.0):
+        raise ValueError(f"--threshold 必须在 [0, 1] 之间，当前为 {args.threshold}")
+    if not (0.0 <= args.iou <= 1.0):
+        raise ValueError(f"--iou 必须在 [0, 1] 之间，当前为 {args.iou}")
+    if args.batch_size is not None and args.batch_size < 1:
+        raise ValueError(f"--batch-size 必须为正整数，当前为 {args.batch_size}")
+    if args.tolerance_seconds is not None and args.tolerance_seconds < 0:
+        raise ValueError(
+            f"--tolerance-seconds 必须为非负数，当前为 {args.tolerance_seconds}"
+        )
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """命令行入口。
+
+    返回:
+        进程退出码：0=成功；2=参数非法；1=运行时错误；130=用户中断。
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        _validate_args(args)
+    except ValueError as exc:
+        log(f"[参数错误] {exc}", stream=sys.stderr)
+        return 2
+
+    include_unannotated = args.include_unannotated
+    include_auto = args.include_auto
+    include_auto_corrected = args.include_auto_corrected
+    include_manual = args.include_manual
+    if not any([include_unannotated, include_auto, include_auto_corrected, include_manual]):
+        include_unannotated = True
+        log(
+            "[提示] 未指定任何 --include-* 开关，默认仅处理 *未标注* 图片。",
+            stream=sys.stderr,
+        )
+
+    try:
+        result = auto_annotate(
+            work_dir=args.input,
+            model_path=args.model,
+            threshold=args.threshold,
+            task=args.task,
+            suffix=args.suffix,
+            device=args.device,
+            iou=args.iou,
+            include_unannotated=include_unannotated,
+            include_auto=include_auto,
+            include_auto_corrected=include_auto_corrected,
+            include_manual=include_manual,
+            tolerance_seconds=args.tolerance_seconds,
+            batch_size=args.batch_size,
+        )
+    except KeyboardInterrupt:
+        log("[已取消] 用户中断，已写入的 JSON 不会被回滚。", stream=sys.stderr)
+        return 130
+    except (ValueError, FileNotFoundError) as exc:
+        log(f"[错误] {exc}", stream=sys.stderr)
+        return 2
+    except ImportError as exc:
+        log(
+            f"[依赖缺失] {exc}\n"
+            f"提示：自动标注需要安装 ultralytics（含 torch）。",
+            stream=sys.stderr,
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        log(f"[错误] 自动标注失败：{exc}", stream=sys.stderr)
+        return 1
+
+    if isinstance(result, dict):
+        total = result.get("total", 0)
+        annotated = result.get("annotated", 0)
+        skipped = result.get("skipped", 0)
+        log(f"[完成] 总计 {total} 张，标注 {annotated} 张，跳过 {skipped} 张。")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

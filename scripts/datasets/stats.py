@@ -1,38 +1,44 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-标注统计核心实现。
+``python scripts/vh.py datasets stats`` 命令实现。
 
 遍历目录下的图片与对应的 X-AnyLabeling JSON 标注文件，输出整体统计与
-按标签的实例统计；同时提供 CLI 输出 JSON 块的生成 / 解析工具，便于 GUI
-通过子进程方式调用。
-
-所有常量（如边界标记）从 :mod:`scripts.config` 读取，所有日志通过
-:mod:`scripts.logging_utils` 的 :func:`log` 输出。
+按标签的实例统计；同时提供供 GUI 解析的 JSON 块生成 / 解析工具。
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
-from scripts._common import iter_images, iter_matched_pairs
-from scripts.core.annotation_type import AnnotationType, AnnotationTypeChecker
-from scripts.config import STATS_RESULT_BEGIN_MARKER, STATS_RESULT_END_MARKER
-from scripts.logging_utils import log
+from scripts.common.annotation_type import AnnotationType, AnnotationTypeChecker
+from scripts.common.config import (
+    STATS_RESULT_BEGIN_MARKER,
+    STATS_RESULT_END_MARKER,
+)
+from scripts.common.logging import log
+from scripts.common.utils import iter_images, iter_matched_pairs
 
 
 __all__ = [
     "collect_annotation_stats",
     "collect_annotation_label_stats",
-    "parse_machine_block",
     "emit_machine_block",
+    "parse_machine_block",
     "print_stats_human",
     "print_label_stats_human",
+    "main",
 ]
 
+
+# --------------------------------------------------------------------------- #
+# 核心统计
+# --------------------------------------------------------------------------- #
 
 def _detect_shape_types(shapes: List[dict]) -> Set[str]:
     """提取 shapes 中出现的 shape_type 集合。"""
@@ -53,16 +59,9 @@ def collect_annotation_stats(folder: str) -> Dict[str, int]:
         folder: 待统计的目录路径。
 
     返回:
-        包含以下键的字典：
-            total_images: 图片总数
-            annotated_images: 已标注图片数（存在对应 JSON 且 shapes 非空）
-            unannotated_images: 未标注图片数
-            detection_images: 包含 rectangle 的图片数
-            obb_images: 包含 rotation 的图片数
-            polygon_images: 包含 polygon 的图片数
-            manual_images: 手动标注图片数
-            auto_images: 自动标注图片数
-            auto_corrected_images: 自动标注并手动矫正图片数
+        包含 total_images、annotated_images、unannotated_images、
+        detection_images、obb_images、polygon_images、manual_images、
+        auto_images、auto_corrected_images 的统计字典。
 
     异常:
         ValueError: 目录不存在或不是文件夹。
@@ -71,7 +70,6 @@ def collect_annotation_stats(folder: str) -> Dict[str, int]:
     if not root.is_dir():
         raise ValueError(f"目录不存在或不是文件夹: {folder}")
 
-    # 图片总数（按 stem 去重，与匹配逻辑保持一致）
     total_images = len({p.stem for p in iter_images(root)})
 
     annotated_images = 0
@@ -127,15 +125,12 @@ def collect_annotation_label_stats(folder: str) -> List[Dict[str, int]]:
     """
     按标签统计目录下的标注实例数量。
 
-    遍历与图片匹配的 X-AnyLabeling JSON 文件，根据 ``label`` 与 ``shape_type``
-    聚合统计每个标签的实例数量。
-
     参数:
         folder: 待统计的目录路径。
 
     返回:
-        每个元素为一个字典，包含 ``label`` / ``detection_count`` /
-        ``obb_count`` / ``polygon_count``。结果按标签名升序排序。
+        每个标签的实例数量列表，元素包含 label、detection_count、
+        obb_count、polygon_count，按标签名升序排列。
 
     异常:
         ValueError: 目录不存在或不是文件夹。
@@ -213,9 +208,6 @@ def print_label_stats_human(label_stats: List[Dict[str, int]]) -> None:
 def emit_machine_block(payload: Dict[str, object]) -> None:
     """
     输出供 GUI / 脚本解析的 JSON 块（用边界标记包裹）。
-
-    JSON 内容会被 :data:`scripts.config.STATS_RESULT_BEGIN_MARKER` 与
-    :data:`scripts.config.STATS_RESULT_END_MARKER` 包围，方便上层定位。
     """
     log(STATS_RESULT_BEGIN_MARKER)
     log(json.dumps(payload, ensure_ascii=False))
@@ -226,14 +218,11 @@ def parse_machine_block(output: str) -> Dict[str, object]:
     """
     从 CLI 输出中提取以边界标记包裹的 JSON 块并解析为字典。
 
-    参数:
-        output: 子进程输出的全部文本（通常是 ``stdout``）。
-
     返回:
         包含 ``stats`` 与 ``label_stats`` 字段的字典。
 
     异常:
-        ValueError: 找不到边界标记或 JSON 解析失败时抛出。
+        ValueError: 找不到边界标记或 JSON 解析失败。
     """
     if not isinstance(output, str):
         raise ValueError("output 必须为字符串")
@@ -257,3 +246,99 @@ def parse_machine_block(output: str) -> Dict[str, object]:
     payload.setdefault("stats", {})
     payload.setdefault("label_stats", [])
     return payload
+
+
+# --------------------------------------------------------------------------- #
+# CLI 入口
+# --------------------------------------------------------------------------- #
+
+def _build_parser() -> argparse.ArgumentParser:
+    """构造命令行参数解析器。"""
+    parser = argparse.ArgumentParser(
+        prog="python scripts/vh.py datasets stats",
+        description=(
+            "统计目录下的图片与 X-AnyLabeling JSON 标注情况，"
+            "支持整体统计与按标签统计。"
+        ),
+    )
+    parser.add_argument(
+        "-i", "--input",
+        type=str,
+        required=True,
+        help="待统计的图片目录路径。",
+    )
+    parser.add_argument(
+        "--label-stats",
+        action="store_true",
+        help="同时输出按标签的实例数量统计。",
+    )
+    parser.add_argument(
+        "--json",
+        dest="json_only",
+        action="store_true",
+        help="仅输出供机器解析的 JSON 块（不打印人类可读日志）。",
+    )
+    return parser
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    """对命令行参数做友好的预校验。"""
+    folder = Path(args.input)
+    if not folder.exists():
+        raise ValueError(f"目录不存在：{args.input}")
+    if not folder.is_dir():
+        raise ValueError(f"路径不是目录：{args.input}")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """命令行入口。
+
+    返回:
+        0=成功；2=参数非法；1=运行时错误；130=用户中断。
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        _validate_args(args)
+    except ValueError as exc:
+        log(f"[错误] {exc}", stream=sys.stderr)
+        return 2
+
+    try:
+        stats = collect_annotation_stats(args.input)
+    except ValueError as exc:
+        log(f"[错误] {exc}", stream=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        log("[已取消] 用户中断。", stream=sys.stderr)
+        return 130
+    except Exception as exc:  # noqa: BLE001
+        log(f"[错误] 整体统计失败: {exc}", stream=sys.stderr)
+        return 1
+
+    label_stats: List[Dict[str, int]] = []
+    if args.label_stats:
+        try:
+            label_stats = collect_annotation_label_stats(args.input)
+        except ValueError as exc:
+            log(f"[错误] {exc}", stream=sys.stderr)
+            return 2
+        except KeyboardInterrupt:
+            log("[已取消] 用户中断。", stream=sys.stderr)
+            return 130
+        except Exception as exc:  # noqa: BLE001
+            log(f"[错误] 标签统计失败: {exc}", stream=sys.stderr)
+            return 1
+
+    if not args.json_only:
+        print_stats_human(stats)
+        if args.label_stats:
+            print_label_stats_human(label_stats)
+
+    emit_machine_block({"stats": stats, "label_stats": label_stats})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

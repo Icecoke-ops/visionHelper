@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-``scripts.export_yolo_dataset.export_yolo_dataset`` 的端到端单元测试。
+``scripts.datasets.export.export_yolo_dataset`` 的端到端单元测试。
 
 通过在临时目录构造少量图片 + X-AnyLabeling JSON 标注（detect 任务的
 rectangle shape），验证：
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.export_yolo_dataset import export_yolo_dataset
+from scripts.datasets.export import export_yolo_dataset
 
 
 # ---------------------------------------------------------------------------

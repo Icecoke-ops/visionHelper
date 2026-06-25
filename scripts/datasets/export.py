@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-将 X-AnyLabeling 标注图片导出为 YOLO 格式数据集（核心实现）。
+将 X-AnyLabeling 标注图片导出为 YOLO 格式数据集。
 
-支持任务类型：detect / obb / segment / classify。详细规则见外层 CLI 文档。
+支持任务类型：detect / obb / segment / classify。本模块同时包含核心实现与
+``python scripts/vh.py datasets export`` 命令行入口。
+
+用法::
+
+    python scripts/vh.py datasets export -i ./images -o ./dataset -t detect -R 0.8 --test-ratio 0.2 -S 42 -C link
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import random
 import shutil
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from PIL import Image as PilImage
 
-from scripts._common import (
-    is_annotation_file as _is_annotation_file,
-    load_annotation as _load_annotation,
-    resolve_image_path as _resolve_image_path,
-)
-from scripts.config import (
+from scripts.common.config import (
     COPY_MODES,
     DETECT_SHAPE_TYPES,
     IMAGES_FOLDER,
@@ -30,16 +32,19 @@ from scripts.config import (
     SEGMENT_SHAPE_TYPES,
     SUPPORTED_TASKS,
 )
-from scripts.logging_utils import ProgressLogger, log
+from scripts.common.logging import ProgressLogger, log
+from scripts.common.utils import (
+    is_annotation_file as _is_annotation_file,
+    load_annotation as _load_annotation,
+    resolve_image_path as _resolve_image_path,
+)
 
 __all__ = [
-    "COPY_MODES",
-    "DETECT_SHAPE_TYPES",
-    "OBB_SHAPE_TYPES",
-    "SEGMENT_SHAPE_TYPES",
-    "SUPPORTED_TASKS",
     "export_yolo_dataset",
+    "main",
 ]
+
+_RATIO_SUM_TOL = 1e-6
 
 
 def _place_image(src: Path, dst: Path, mode: str) -> None:
@@ -58,7 +63,6 @@ def _place_image(src: Path, dst: Path, mode: str) -> None:
         os.symlink(os.path.abspath(str(src)), str(dst))
         return
 
-    # mode == "link"
     try:
         os.link(str(src), str(dst))
     except OSError:
@@ -324,7 +328,6 @@ def _export_classify(
         progress.update(1)
     progress.close()
 
-    # 生成 data.yaml（分类任务）：path 指向 images/，train/val/test 用相对子目录
     yaml_path = output_path / "data.yaml"
     used_class_names = [name for name in class_names if name in used_classes]
     yaml_content = (
@@ -377,7 +380,7 @@ def export_yolo_dataset(
     ratios = [train_ratio, test_ratio]
     if any(r < 0 for r in ratios):
         raise ValueError("划分比例必须大于等于 0")
-    if abs(sum(ratios) - 1.0) > 1e-6:
+    if abs(sum(ratios) - 1.0) > _RATIO_SUM_TOL:
         raise ValueError(f"划分比例之和必须等于 1，当前为 {sum(ratios)}")
 
     labels = _collect_labels(input_path, task)
@@ -510,3 +513,149 @@ def export_yolo_dataset(
         f"  保存路径: {output_path}"
     )
     return counts
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """构造命令行参数解析器。"""
+    parser = argparse.ArgumentParser(
+        prog="python scripts/vh.py datasets export",
+        description=(
+            "将 X-AnyLabeling JSON 标注的图片目录导出为 YOLO 数据集。"
+            "支持 detect / obb / segment / classify 4 种任务。"
+        ),
+    )
+    parser.add_argument(
+        "-i", "--input",
+        type=str,
+        required=True,
+        help="包含图片与 X-AnyLabeling JSON 的目录",
+    )
+    parser.add_argument(
+        "-o", "--output",
+        type=str,
+        required=True,
+        help="输出的数据集目录（不存在会自动创建）",
+    )
+    parser.add_argument(
+        "-t", "--task",
+        type=str,
+        default="detect",
+        choices=sorted(SUPPORTED_TASKS),
+        help="任务类型：detect / obb / segment / classify，默认 detect",
+    )
+    parser.add_argument(
+        "-R", "--train-ratio",
+        type=float,
+        default=0.8,
+        help="训练集比例（0~1），默认 0.8",
+    )
+    parser.add_argument(
+        "--test-ratio",
+        type=float,
+        default=0.2,
+        help="测试集比例（0~1），默认 0.2；train-ratio + test-ratio 须约等于 1。",
+    )
+    parser.add_argument(
+        "-S", "--seed",
+        type=int,
+        default=42,
+        help="随机划分种子，默认 42",
+    )
+    parser.add_argument(
+        "-C", "--copy-mode",
+        type=str,
+        default="copy",
+        choices=sorted(COPY_MODES),
+        help=(
+            "图片落盘方式：copy=复制（默认）；link=硬链接（同一文件系统）；"
+            "symlink=软链接（跨文件系统也可，需目标文件系统支持）。"
+        ),
+    )
+    return parser
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    """对命令行参数做友好的预校验。"""
+    input_dir = Path(args.input)
+    if not input_dir.exists():
+        raise ValueError(f"输入目录不存在：{args.input}")
+    if not input_dir.is_dir():
+        raise ValueError(f"输入路径不是目录：{args.input}")
+
+    output_dir = Path(args.output)
+    if output_dir.exists() and not output_dir.is_dir():
+        raise ValueError(f"输出路径已存在但不是目录：{args.output}")
+
+    try:
+        if output_dir.exists() and input_dir.resolve() == output_dir.resolve():
+            raise ValueError("输入目录与输出目录不能相同，否则会破坏原始数据。")
+    except OSError:
+        pass
+
+    if not (0.0 < args.train_ratio < 1.0):
+        raise ValueError(
+            f"--train-ratio 必须在 (0, 1) 之间，当前为 {args.train_ratio}"
+        )
+    if not (0.0 < args.test_ratio < 1.0):
+        raise ValueError(
+            f"--test-ratio 必须在 (0, 1) 之间，当前为 {args.test_ratio}"
+        )
+    if abs(args.train_ratio + args.test_ratio - 1.0) > _RATIO_SUM_TOL:
+        raise ValueError(
+            f"--train-ratio + --test-ratio 必须约等于 1，当前为 "
+            f"{args.train_ratio} + {args.test_ratio} = "
+            f"{args.train_ratio + args.test_ratio}"
+        )
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """命令行入口。
+
+    返回:
+        进程退出码：0=成功；2=参数非法；1=运行时错误；130=用户中断。
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        _validate_args(args)
+    except ValueError as exc:
+        log(f"[参数错误] {exc}", stream=sys.stderr)
+        return 2
+
+    try:
+        result = export_yolo_dataset(
+            input_dir=args.input,
+            output_dir=args.output,
+            task=args.task,
+            train_ratio=args.train_ratio,
+            test_ratio=args.test_ratio,
+            seed=args.seed,
+            copy_mode=args.copy_mode,
+        )
+    except KeyboardInterrupt:
+        log("[已取消] 用户中断，输出目录可能处于不完整状态。", stream=sys.stderr)
+        return 130
+    except (ValueError, FileNotFoundError) as exc:
+        log(f"[错误] {exc}", stream=sys.stderr)
+        return 2
+    except OSError as exc:
+        log(
+            f"[文件系统错误] {exc}\n"
+            f"提示：若使用 --copy-mode link/symlink 失败，可尝试 --copy-mode copy。",
+            stream=sys.stderr,
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        log(f"[错误] 导出 YOLO 数据集失败：{exc}", stream=sys.stderr)
+        return 1
+
+    if isinstance(result, dict):
+        train_n = result.get("train", 0)
+        test_n = result.get("test", 0)
+        log(f"[完成] 训练集 {train_n} 张，测试集 {test_n} 张 → {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

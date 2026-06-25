@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.core.annotation_type import AnnotationType, AnnotationTypeChecker
+from scripts.common.annotation_type import AnnotationType, AnnotationTypeChecker
 
 
 def _set_mtime(path: Path, dt: datetime) -> None:

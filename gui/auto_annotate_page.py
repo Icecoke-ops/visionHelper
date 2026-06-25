@@ -147,7 +147,7 @@ class AutoAnnotatePage(BaseTaskPage):
 
         # 仅在需要时局部 import 轻量子模块，避免在 GUI 进程启动时拖入
         # scripts.api 顶部的 torch / ultralytics 等重依赖。
-        from scripts._common import discover_trained_models
+        from scripts.common.utils import discover_trained_models
 
         models = discover_trained_models(runs_dir)
         if not models:
@@ -206,9 +206,9 @@ class AutoAnnotatePage(BaseTaskPage):
             return
 
         arguments = build_script_argv(
-            "scripts.auto_annotate",
-            image_dir,
-            model_path,
+            "datasets", "auto",
+            input=image_dir,
+            model=model_path,
             threshold=f"{self.threshold_spin.value():.4f}",
             task=self.task_combo.currentData(),
             iou=f"{self.iou_spin.value():.4f}",

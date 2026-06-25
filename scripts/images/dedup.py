@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-图片去重核心实现，支持多种特征提取后端。
+图片去重模块（``python scripts/vh.py images dedup`` 实现）。
 
-后端（``backend`` 参数）：
-    - ``vit``：基于 HuggingFace ``transformers`` 的 ViT / DINOv2 等模型，
-      使用 ``[CLS]`` token 的 L2 归一化向量计算余弦相似度（默认）。
-    - ``phash``：使用感知哈希（pHash），仅依赖 ``Pillow`` 与 ``numpy``，
-      速度快、显存占用低，适合大批量图片的粗筛或无 GPU 环境。
+合并旧 ``scripts.core.deduplicate_images`` 与 ``scripts.deduplicate_images``
+CLI 门面，提供 :func:`deduplicate` 核心实现与 ``main`` 命令行入口。
+
+零副作用约定
+------------
+
+``torch`` / ``transformers`` 等重依赖仅在 ``backend=vit`` 且调用相关函数时
+按需 import，模块顶层仅引入 ``Pillow`` / ``numpy``。
 """
 
 from __future__ import annotations
 
+import argparse
 import shutil
+import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
 
-from scripts._common import is_image_file
-from scripts.config import (
+from scripts.common.config import (
     DEFAULT_PHASH_SIZE,
     DEFAULT_VIT_BATCH_SIZE,
     DEFAULT_VIT_MODEL,
     SUPPORTED_DEDUP_BACKENDS as SUPPORTED_BACKENDS,
 )
-from scripts.logging_utils import ProgressLogger, log
+from scripts.common.logging import ProgressLogger, log
+from scripts.common.utils import is_image_file
 
 __all__ = [
     "SUPPORTED_BACKENDS",
@@ -36,6 +41,7 @@ __all__ = [
     "find_duplicates",
     "list_images",
     "load_model",
+    "main",
 ]
 
 
@@ -50,15 +56,13 @@ def list_images(folder: str) -> List[Path]:
     return images
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------- #
 # 后端 1：ViT / DINOv2 等 transformers 模型
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------- #
+
 
 def load_model(model_name: str = DEFAULT_VIT_MODEL):
-    """加载 ViT/DINOv2 模型和图像处理器。
-
-    使用 ``transformers.AutoModel`` 以兼容 ViT、DINOv2 等不同架构。
-    """
+    """加载 ViT/DINOv2 模型和图像处理器。"""
     import torch
     from transformers import AutoImageProcessor, AutoModel
 
@@ -126,9 +130,10 @@ def extract_features_vit(
     return features
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------- #
 # 后端 2：感知哈希 pHash
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------- #
+
 
 def _phash_vector(image: Image.Image, hash_size: int = DEFAULT_PHASH_SIZE) -> np.ndarray:
     """计算单张图片的感知哈希向量（DCT 低频系数二值化）。"""
@@ -171,9 +176,10 @@ def extract_features_phash(
     return features
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------- #
 # 重复识别
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------- #
+
 
 def find_duplicates(
         features: List[Optional[np.ndarray]],
@@ -213,9 +219,10 @@ def find_duplicates(
     return keep, duplicate
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------- #
 # 高层入口
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------- #
+
 
 def deduplicate(
         folder: str,
@@ -288,3 +295,156 @@ def deduplicate(
             log("\n未指定 delete 或 move_to，仅列出重复图片，未执行任何操作。")
 
     return {"keep": keep_paths, "duplicates": duplicate_paths}
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """构造命令行参数解析器。"""
+    parser = argparse.ArgumentParser(
+        prog="python scripts/vh.py images dedup",
+        description=(
+            "图片去重工具：基于 ViT 特征或感知哈希（pHash）查找相似图片，"
+            "可选择仅检测、删除或移动到指定目录。"
+        ),
+    )
+    parser.add_argument(
+        "--input", "-i", required=True, help="待处理图片所在的文件夹路径"
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.95,
+        help="相似度阈值（0~1，越高越严格），默认 0.95。",
+    )
+    parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="直接删除重复图片（与 --move-to 互斥）。",
+    )
+    parser.add_argument(
+        "--move-to",
+        type=str,
+        default=None,
+        help="将重复图片移动到指定目录（与 --delete 互斥，目标目录不存在会自动创建）。",
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="vit",
+        choices=sorted(SUPPORTED_BACKENDS),
+        help="特征后端：vit=高精度但需要 GPU/较慢；phash=快速但仅适合明显重复。默认 vit。",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_VIT_MODEL,
+        help=f"使用的 ViT/DINOv2 模型名称（仅 backend=vit 时生效），默认 {DEFAULT_VIT_MODEL}。",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_VIT_BATCH_SIZE,
+        help=(
+            f"特征提取的批大小（必须为正整数，仅 backend=vit 时生效），"
+            f"默认 {DEFAULT_VIT_BATCH_SIZE}。"
+        ),
+    )
+    parser.add_argument(
+        "--hash-size",
+        type=int,
+        default=DEFAULT_PHASH_SIZE,
+        help=(
+            f"pHash 哈希尺寸（必须为正整数；向量维度 = hash_size**2；仅 "
+            f"backend=phash 时生效），默认 {DEFAULT_PHASH_SIZE}。"
+        ),
+    )
+    return parser
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    """对命令行参数做友好的预校验。"""
+    folder = Path(args.input)
+    if not folder.exists():
+        raise ValueError(f"目录不存在：{args.input}")
+    if not folder.is_dir():
+        raise ValueError(f"路径不是目录：{args.input}")
+
+    if not (0.0 < args.threshold <= 1.0):
+        raise ValueError(
+            f"--threshold 必须在 (0, 1] 之间，当前为 {args.threshold}"
+        )
+
+    if args.delete and args.move_to:
+        raise ValueError("--delete 与 --move-to 不能同时指定，请二选一。")
+
+    if args.move_to:
+        move_to = Path(args.move_to)
+        if move_to.exists() and not move_to.is_dir():
+            raise ValueError(f"--move-to 目标已存在但不是目录：{args.move_to}")
+
+    if args.backend == "vit":
+        if args.batch_size is not None and args.batch_size < 1:
+            raise ValueError(f"--batch-size 必须为正整数，当前为 {args.batch_size}")
+    elif args.backend == "phash":
+        if args.hash_size is not None and args.hash_size < 1:
+            raise ValueError(f"--hash-size 必须为正整数，当前为 {args.hash_size}")
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """
+    ``python scripts/vh.py images dedup`` 命令行入口。
+
+    返回:
+        0 成功；1 运行时错误；2 参数非法；130 用户中断。
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        _validate_args(args)
+    except ValueError as exc:
+        log(f"[参数错误] {exc}", stream=sys.stderr)
+        return 2
+
+    try:
+        result = deduplicate(
+            folder=args.input,
+            threshold=args.threshold,
+            delete=args.delete,
+            move_to=args.move_to,
+            model_name=args.model,
+            batch_size=args.batch_size,
+            backend=args.backend,
+            hash_size=args.hash_size,
+        )
+    except KeyboardInterrupt:
+        log("[已取消] 用户中断，未对已处理图片造成不可逆变更。", stream=sys.stderr)
+        return 130
+    except (ValueError, FileNotFoundError) as exc:
+        log(f"[错误] {exc}", stream=sys.stderr)
+        return 2
+    except ImportError as exc:
+        log(
+            f"[依赖缺失] {exc}\n"
+            f"提示：使用 --backend vit 需要安装 torch / transformers；"
+            f"或改用 --backend phash 以避免该依赖。",
+            stream=sys.stderr,
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        log(f"[错误] 图片去重失败：{exc}", stream=sys.stderr)
+        return 1
+
+    if isinstance(result, dict):
+        keep_n = len(result.get("keep", []) or [])
+        dup_n = len(result.get("duplicates", []) or [])
+        log(f"[完成] 保留 {keep_n} 张，识别重复 {dup_n} 张。")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
