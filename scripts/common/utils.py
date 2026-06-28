@@ -24,6 +24,7 @@ __all__ = [
     "IMAGE_EXTENSIONS",
     "ProgressLogger",
     "discover_trained_models",
+    "find_model_class_names",
     "is_annotation_file",
     "is_image_file",
     "iter_annotations",
@@ -33,6 +34,16 @@ __all__ = [
     "resolve_image_path",
     "resolve_image_stem",
 ]
+
+
+def find_model_class_names(model) -> list:
+    """从 Ultralytics YOLO 模型中提取类别名称列表。"""
+    names = getattr(model, "names", None)
+    if isinstance(names, dict):
+        return [names[i] for i in sorted(names)]
+    if isinstance(names, (list, tuple)):
+        return list(names)
+    return []
 
 
 def is_image_file(path: Path) -> bool:

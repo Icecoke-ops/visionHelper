@@ -57,6 +57,8 @@ class LabeledSpinBox(QWidget):
         min_value: int,
         max_value: int,
         default: int,
+        label_width: int = 80,
+        spin_width: int = 80,
         parent: QWidget = None,
     ):
         super().__init__(parent)
@@ -65,12 +67,13 @@ class LabeledSpinBox(QWidget):
         layout.setSpacing(6)
 
         self.label = QLabel(label)
-        self.label.setFixedWidth(50)
+        self.label.setFixedWidth(label_width)
         layout.addWidget(self.label)
 
         self.spin = QSpinBox()
         self.spin.setRange(min_value, max_value)
         self.spin.setValue(default)
+        self.spin.setFixedWidth(spin_width)
         layout.addWidget(self.spin)
 
     def value(self) -> int:
@@ -99,6 +102,8 @@ class LabeledDoubleSpinBox(QWidget):
         default: float,
         decimals: int = 2,
         step: float = 0.01,
+        label_width: int = 80,
+        spin_width: int = 80,
         parent: QWidget = None,
     ):
         super().__init__(parent)
@@ -107,7 +112,7 @@ class LabeledDoubleSpinBox(QWidget):
         layout.setSpacing(6)
 
         self.label = QLabel(label)
-        self.label.setFixedWidth(50)
+        self.label.setFixedWidth(label_width)
         layout.addWidget(self.label)
 
         self.spin = QDoubleSpinBox()
@@ -115,6 +120,7 @@ class LabeledDoubleSpinBox(QWidget):
         self.spin.setDecimals(decimals)
         self.spin.setSingleStep(step)
         self.spin.setValue(default)
+        self.spin.setFixedWidth(spin_width)
         layout.addWidget(self.spin)
 
     def value(self) -> float:

@@ -19,7 +19,7 @@ GUI 配置持久化工具模块。
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from PyQt5.QtCore import QSettings
 
@@ -40,9 +40,6 @@ _KEY_PYTHON_ENV = "python_env"
 
 # 最近使用过的工作目录列表（按最近使用优先）
 _KEY_RECENT_WORK_DIRS = "recent_work_dirs"
-
-# 主窗口几何信息（保留接口，目前 MainWindow 暂未持久化）
-_KEY_WINDOW_GEOMETRY = "window_geometry"
 
 # 历史目录列表的最大长度，超过的会被截断
 MAX_RECENT_WORK_DIRS = 20
@@ -134,21 +131,3 @@ def promote_recent_dir(path: str) -> List[str]:
     return recent
 
 
-# ---------------------------------------------------------------------------
-# 主窗口几何（预留，便于将来恢复窗口大小/位置）
-# ---------------------------------------------------------------------------
-
-
-def load_window_geometry() -> Optional[bytes]:
-    """读取主窗口保存的几何信息，未保存时返回 ``None``。"""
-    value = _settings().value(_KEY_WINDOW_GEOMETRY)
-    if isinstance(value, (bytes, bytearray)):
-        return bytes(value)
-    return None
-
-
-def save_window_geometry(data: bytes) -> None:
-    """保存主窗口几何信息。"""
-    if data is None:
-        return
-    _settings().setValue(_KEY_WINDOW_GEOMETRY, bytes(data))

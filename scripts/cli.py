@@ -10,9 +10,59 @@ help 信息、业务实现均放在各自子包模块中。
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import sys
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
+
+
+# 模块级导入缓存：避免重复动态导入带来的延迟
+_MAIN_CACHE: dict[str, Callable[[List[str]], int]] = {}
+
+
+def _get_main(subcommand: str, action: str) -> Callable[[List[str]], int]:
+    """获取子命令的 main 函数（带缓存）。"""
+    key = f"{subcommand}.{action}"
+    if key not in _MAIN_CACHE:
+        if subcommand == "images":
+            if action == "import":
+                module = importlib.import_module("scripts.images.import_")
+            elif action == "dedup":
+                module = importlib.import_module("scripts.images.dedup")
+            elif action == "augment":
+                module = importlib.import_module("scripts.images.augment")
+            else:
+                raise ValueError(f"未知动作: images {action}")
+        elif subcommand == "datasets":
+            if action == "stats":
+                module = importlib.import_module("scripts.datasets.stats")
+            elif action == "auto":
+                module = importlib.import_module("scripts.datasets.auto")
+            elif action == "clear":
+                module = importlib.import_module("scripts.datasets.clear")
+            elif action == "export":
+                module = importlib.import_module("scripts.datasets.export")
+            else:
+                raise ValueError(f"未知动作: datasets {action}")
+        elif subcommand == "train":
+            if action == "run":
+                module = importlib.import_module("scripts.train.train")
+            else:
+                raise ValueError(f"未知动作: train {action}")
+        elif subcommand == "predict":
+            if action == "run":
+                module = importlib.import_module("scripts.predict.predict")
+            else:
+                raise ValueError(f"未知动作: predict {action}")
+        elif subcommand == "deploy":
+            if action == "export":
+                module = importlib.import_module("scripts.deploy.deploy")
+            else:
+                raise ValueError(f"未知动作: deploy {action}")
+        else:
+            raise ValueError(f"未知子命令: {subcommand}")
+        _MAIN_CACHE[key] = module.main
+    return _MAIN_CACHE[key]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -61,11 +111,12 @@ def _build_parser() -> argparse.ArgumentParser:
     images_sub = images.add_subparsers(dest="action", help="images 动作")
     images_sub.add_parser("import", help="从视频抽帧导入图片", add_help=False)
     images_sub.add_parser("dedup", help="图片去重", add_help=False)
+    images_sub.add_parser("augment", help="图片数据增强", add_help=False)
 
     # datasets
     datasets = subparsers.add_parser("datasets", help="数据集制作", add_help=False)
     datasets_sub = datasets.add_subparsers(dest="action", help="datasets 动作")
-    datasets_sub.add_parser("stats", help="标注统计", add_help=False)
+    datasets_sub.add_parser("stats", help="标注信息", add_help=False)
     datasets_sub.add_parser("auto", help="自动标注", add_help=False)
     datasets_sub.add_parser("clear", help="清除标注", add_help=False)
     datasets_sub.add_parser("export", help="导出 YOLO 数据集", add_help=False)
@@ -93,42 +144,8 @@ def _print_top_level_help(parser: argparse.ArgumentParser) -> int:
 
 def _route(subcommand: Optional[str], action: Optional[str], argv: List[str]) -> int:
     """根据子命令与动作分发到对应入口函数。"""
-    if subcommand == "images":
-        if action == "import":
-            from scripts.images.import_ import main as _main
-        elif action == "dedup":
-            from scripts.images.dedup import main as _main
-        else:
-            raise ValueError(f"unknown action: images {action}")
-    elif subcommand == "datasets":
-        if action == "stats":
-            from scripts.datasets.stats import main as _main
-        elif action == "auto":
-            from scripts.datasets.auto import main as _main
-        elif action == "clear":
-            from scripts.datasets.clear import main as _main
-        elif action == "export":
-            from scripts.datasets.export import main as _main
-        else:
-            raise ValueError(f"unknown action: datasets {action}")
-    elif subcommand == "train":
-        if action == "run":
-            from scripts.train.train import main as _main
-        else:
-            raise ValueError(f"unknown action: train {action}")
-    elif subcommand == "predict":
-        if action == "run":
-            from scripts.predict.predict import main as _main
-        else:
-            raise ValueError(f"unknown action: predict {action}")
-    elif subcommand == "deploy":
-        if action == "export":
-            from scripts.deploy.deploy import main as _main
-        else:
-            raise ValueError(f"unknown action: deploy {action}")
-    else:
-        raise ValueError(f"unknown subcommand: {subcommand}")
-    return _main(argv)
+    main_func = _get_main(subcommand, action)
+    return main_func(argv)
 
 
 def _apply_global_options(args: argparse.Namespace) -> None:

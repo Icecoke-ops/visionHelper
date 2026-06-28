@@ -31,6 +31,21 @@ TRAIN_FOLDER = "runs"
 # 回收站文件夹名称：图片去重时移动重复图片的目标目录
 RECYCLE_BIN_FOLDER = "recycle_bin"
 
+# 预测结果文件夹名称：模型预测结果保存目录
+PREDICT_FOLDER = "predict"
+
+# visionHelper 版本号
+APP_VERSION = "1.0.1"
+
+# visionHelper 项目号（项目编号 / 项目编码）
+APP_PROJECT_CODE = "VH-2026-001"
+
+# 作者信息
+APP_AUTHOR = "IceCoke"
+
+# 项目仓库地址（待更新为实际仓库地址）
+PROJECT_HOMEPAGE = "https://github.com/"
+
 
 def is_frozen() -> bool:
     """判断当前进程是否处于 PyInstaller / cx_Freeze 等冻结打包态。"""

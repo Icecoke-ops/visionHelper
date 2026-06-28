@@ -30,8 +30,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, List
 
-from gui.config import scripts_dir
-
 
 def _to_cli_value(value: Any) -> str:
     """将任意 Python 值转换为 CLI 参数字符串。"""
@@ -49,7 +47,10 @@ def _key_to_flag(key: str) -> str:
 
 
 def build_script_argv(subcommand: str, action: str, **options: Any) -> List[str]:
-    """构造 ``python scripts/vh.py <subcommand> <action> --arg value`` 风格的参数列表。
+    """构造 ``python -m scripts.vh <subcommand> <action> --arg value`` 风格的参数列表。
+
+    使用 ``-m`` 模式而非直接传入脚本路径，保证 ``scripts`` 包始终能被正确解析为
+    顶层模块（不会因 ``sys.path[0]`` 指向 ``scripts/`` 内部而找不到父包）。
 
     参数:
         subcommand: 一级子命令（例如 ``images``、``datasets``）。
@@ -60,17 +61,12 @@ def build_script_argv(subcommand: str, action: str, **options: Any) -> List[str]
             - ``None`` / 空串：忽略。
             - 其它类型：作为 ``--key value``。
 
-            注意：CLI 重构后所有参数必须显式带 ``-`` / ``--``，不允许
-            位置参数或列表展开，因此本函数不再接受 ``*positional``，也
-            不再展开 ``list`` / ``tuple``。
-
     返回:
         可直接传给 ``QProcess.start(python_path, argv)`` 的字符串列表，
-        形如 ``["scripts/vh.py", "images", "import", "--input", "...", ...]``。
-        调用方需把 ``python_path`` 指向 Python 解释器，本函数已自动将
-        ``scripts/vh.py`` 脚本路径追加到参数列表最前端。
+        形如 ``["-m", "scripts.vh", "images", "import", "--input", "...", ...]``。
+        调用方需把 ``python_path`` 指向 Python 解释器。
     """
-    argv: List[str] = [str(scripts_dir() / "vh.py"), subcommand, action]
+    argv: List[str] = ["-m", "scripts.vh", subcommand, action]
 
     for key, value in options.items():
         if value is None:
@@ -104,16 +100,30 @@ def infer_script_name(arguments: Iterable[Any]) -> str:
     """
     args = list(arguments or [])
 
-    # 新 ``scripts/vh.py`` 形式：脚本路径后的前两个 token 分别是 subcommand 和 action
+    # ``-m scripts.vh <subcommand> <action>`` 形式
+    if (
+        len(args) >= 4
+        and args[0] == "-m"
+        and isinstance(args[1], str)
+        and args[1].endswith(".vh")
+        and isinstance(args[2], str)
+        and isinstance(args[3], str)
+    ):
+        return f"{args[2]}_{args[3]}"
+
+    # 旧 ``scripts/vh.py <subcommand> <action>`` 形式
     if (
         len(args) >= 3
+        and isinstance(args[0], str)
         and isinstance(args[1], str)
         and isinstance(args[2], str)
-        and args[1].endswith(".py")
-        and not args[2].startswith("-")
+        and args[0].endswith(".py")
+        and not args[1].startswith("-")
     ):
-        subcommand_index = 2
-    elif (
+        return f"{args[1]}_{args[2]}"
+
+    # 旧 ``<subcommand> <action>`` 形式（无脚本路径前缀）
+    if (
         len(args) >= 2
         and isinstance(args[0], str)
         and isinstance(args[1], str)
@@ -121,12 +131,7 @@ def infer_script_name(arguments: Iterable[Any]) -> str:
         and not args[1].startswith("-")
         and not args[0].endswith(".py")
     ):
-        subcommand_index = 0
-    else:
-        subcommand_index = None
-
-    if subcommand_index is not None:
-        return f"{args[subcommand_index]}_{args[subcommand_index + 1]}"
+        return f"{args[0]}_{args[1]}"
 
     # 旧 ``-m scripts.xxx`` 形式（兼容）
     for i, token in enumerate(args):

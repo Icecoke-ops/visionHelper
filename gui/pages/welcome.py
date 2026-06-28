@@ -13,7 +13,7 @@ visionHelper GUI 启动引导页。
 ``recent_work_dirs`` 键持久化，列表内容按 "最近使用优先" 维护。
 
 页面所有视觉样式（颜色、圆角、字体、间距）统一来自 :mod:`gui.theme` 与
-:mod:`gui.widgets`，本模块不再写内联样式。
+:mod:`gui.components.widgets`，本模块不再写内联样式。
 """
 
 from pathlib import Path
@@ -34,88 +34,80 @@ from PyQt5.QtWidgets import (
 )
 
 from gui import theme
-from gui.settings import MAX_RECENT_WORK_DIRS as MAX_RECENT
-from gui.widgets import IconButton, LinkButton, MutedLabel, PrimaryButton
+from gui.settings import MAX_RECENT_WORK_DIRS
+from gui.components.widgets import IconButton, LinkButton, MutedLabel, PrimaryButton
 
-# 历史目录最多保留多少项；统一从 :mod:`gui.settings` 引入，避免出现两份常量。
-__all__ = ["MAX_RECENT", "WelcomePage"]
+__all__ = ["WelcomePage"]
 
 
 class WelcomePage(QWidget):
-    """visionHelper 引导页：历史工作目录列表 + 新增目录按钮。
+    """visionHelper 引导页：历史工作目录列表 + 新增目录按钮。"""
 
-    通过 :data:`work_dir_selected` 信号将最终选定的工作目录传递给主窗口。
-    """
-
-    # 选定一个工作目录后发出的信号，参数为工作目录绝对路径
     work_dir_selected = pyqtSignal(str)
 
-    def __init__(self, parent: QWidget = None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self._recent_dirs: List[str] = []
         self._init_ui()
 
-    # ------------------------------------------------------------------
-    # UI 初始化
-    # ------------------------------------------------------------------
-
     def _init_ui(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(60, 40, 60, 40)
-        outer.setSpacing(theme.SPACING_MD)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ===== 中间内容区 =====
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(60, 40, 60, 30)
+        content_layout.setSpacing(theme.SPACING_MD)
 
         # 标题
         title = QLabel("欢迎使用 visionHelper")
-        title_font = theme.app_font()
-        title_font.setPointSize(theme.FONT_SIZE_LARGE_TITLE)
-        title_font.setBold(True)
-        title.setFont(title_font)
-        outer.addWidget(title)
+        title.setObjectName("welcomeTitle")
+        content_layout.addWidget(title)
 
-        subtitle = MutedLabel("请选择一个工作目录开始：")
-        outer.addWidget(subtitle)
+        subtitle = QLabel("请选择一个工作目录开始：")
+        subtitle.setObjectName("welcomeSubtitle")
+        content_layout.addWidget(subtitle)
 
-        # 历史目录列表（颜色/圆角等由全局 QSS 提供）
+        # 历史目录列表
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QListWidget.NoSelection)
         self.list_widget.setFocusPolicy(Qt.NoFocus)
+        self.list_widget.setObjectName("welcomeList")
         self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        outer.addWidget(self.list_widget, stretch=1)
+        content_layout.addWidget(self.list_widget, stretch=1)
 
         # 空列表占位提示
-        self.empty_label = MutedLabel("暂无历史工作目录，点击下方按钮添加新目录开始使用。")
+        self.empty_label = QLabel("暂无历史工作目录，点击下方按钮添加新目录开始使用。")
+        self.empty_label.setObjectName("welcomeEmpty")
         self.empty_label.setAlignment(Qt.AlignCenter)
-        outer.addWidget(self.empty_label)
+        content_layout.addWidget(self.empty_label)
 
-        # 底部按钮区
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        self.add_btn = PrimaryButton("➕ 添加新目录")
+        outer.addWidget(content, 1)
+
+        # ===== 底部按钮区 =====
+        footer = QWidget()
+        footer.setObjectName("welcomeFooter")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(60, 16, 60, 30)
+        footer_layout.addStretch()
+        self.add_btn = PrimaryButton("添加新目录")
         self.add_btn.setMinimumWidth(140)
         self.add_btn.clicked.connect(self._on_add_clicked)
-        btn_row.addWidget(self.add_btn)
-        outer.addLayout(btn_row)
-
-    # ------------------------------------------------------------------
-    # 历史目录管理
-    # ------------------------------------------------------------------
+        footer_layout.addWidget(self.add_btn)
+        outer.addWidget(footer)
 
     def set_recent_dirs(self, dirs: List[str]):
-        """设置并刷新历史目录列表。
-
-        :param dirs: 历史工作目录路径列表（按最近使用优先排序）。
-        """
-        # 过滤空值并去重，保持原始顺序
+        """设置并刷新历史目录列表。"""
         seen = set()
         cleaned: List[str] = []
         for d in dirs or []:
-            if not d:
-                continue
-            if d in seen:
+            if not d or d in seen:
                 continue
             seen.add(d)
             cleaned.append(d)
-        self._recent_dirs = cleaned[:MAX_RECENT]
+        self._recent_dirs = cleaned[:MAX_RECENT_WORK_DIRS]
         self._refresh_list()
 
     def recent_dirs(self) -> List[str]:
@@ -138,15 +130,15 @@ class WelcomePage(QWidget):
     def _append_row(self, path: str):
         """向列表中追加一行显示。"""
         item = QListWidgetItem()
-        # 禁用 item 自身的选中/键盘交互，全部交给行内按钮
         item.setFlags(Qt.NoItemFlags)
 
         row = QFrame()
+        row.setObjectName("welcomeRow")
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(theme.SPACING_SM, theme.SPACING_XS, theme.SPACING_SM, theme.SPACING_XS)
-        layout.setSpacing(theme.SPACING_SM)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
 
-        # 主按钮：显示路径，点击进入工作目录
+        # 主按钮：显示路径
         p = Path(path)
         name = p.name or str(p)
         text = f"{name}    {path}" if name != path else path
@@ -156,7 +148,7 @@ class WelcomePage(QWidget):
         open_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout.addWidget(open_btn, stretch=1)
 
-        # 删除按钮：从历史中移除
+        # 删除按钮
         remove_btn = IconButton("✕")
         remove_btn.setFixedWidth(28)
         remove_btn.setToolTip("从历史中移除")
@@ -166,10 +158,6 @@ class WelcomePage(QWidget):
         item.setSizeHint(row.sizeHint())
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, row)
-
-    # ------------------------------------------------------------------
-    # 行内按钮交互
-    # ------------------------------------------------------------------
 
     def _on_open_clicked(self, path: str):
         """点击列表项：打开该工作目录。"""
@@ -185,12 +173,11 @@ class WelcomePage(QWidget):
                 self._on_remove_clicked(path)
             return
 
-        # 打开后将该项前置
         self._move_to_front(path)
         self.work_dir_selected.emit(path)
 
     def _on_remove_clicked(self, path: str):
-        """点击 ✕：从历史中移除指定目录。"""
+        """从历史中移除指定目录。"""
         if path in self._recent_dirs:
             self._recent_dirs.remove(path)
             self._refresh_list()
@@ -209,6 +196,6 @@ class WelcomePage(QWidget):
         if path in self._recent_dirs:
             self._recent_dirs.remove(path)
         self._recent_dirs.insert(0, path)
-        if len(self._recent_dirs) > MAX_RECENT:
-            self._recent_dirs = self._recent_dirs[:MAX_RECENT]
+        if len(self._recent_dirs) > MAX_RECENT_WORK_DIRS:
+            self._recent_dirs = self._recent_dirs[:MAX_RECENT_WORK_DIRS]
         self._refresh_list()

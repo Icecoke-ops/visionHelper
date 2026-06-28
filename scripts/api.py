@@ -17,6 +17,7 @@ visionHelper 对外统一 API 接口。
     - :meth:`AnnotationAPI.discover_trained_models`     扫描 runs 训练产物
     - :meth:`TrainingAPI.export_yolo_dataset`           导出 YOLO 数据集
     - :meth:`TrainingAPI.train_model`                   训练 YOLO 模型
+    - :meth:`PredictAPI.predict`                        模型预测（图片/视频）
 
 设计要点
 ========
@@ -57,10 +58,17 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from scripts.common.train_config import TrainConfig
+
 
 # ---------------------------------------------------------------------------
 # 内部辅助：轻量参数校验
 # ---------------------------------------------------------------------------
+def _is_number(value: object) -> bool:
+    """判断是否为数值类型（排除 bool）。"""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _require_non_empty_str(value: object, name: str) -> str:
     """校验 ``value`` 是非空字符串，否则抛 :class:`ValueError`。"""
     if not isinstance(value, str) or not value.strip():
@@ -102,7 +110,7 @@ def _require_in_range(
     校验数值 ``value`` 位于 ``[lo, hi]``（端点开闭可配置）内，
     否则抛 :class:`ValueError`。
     """
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not _is_number(value):
         raise ValueError(f"参数 {name!r} 必须是数值，当前值: {value!r}")
     lo_ok = value >= lo if inclusive_lo else value > lo
     hi_ok = value <= hi if inclusive_hi else value < hi
@@ -112,6 +120,27 @@ def _require_in_range(
         raise ValueError(
             f"参数 {name!r} 必须位于 {lb}{lo}, {hi}{rb}，当前值: {value}"
         )
+    return float(value)
+
+
+def _require_positive_int(value: object, name: str) -> int:
+    """校验 ``value`` 为正整数。"""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"参数 {name!r} 必须是 >=1 的整数，当前值: {value!r}")
+    return value
+
+
+def _require_non_negative_int(value: object, name: str) -> int:
+    """校验 ``value`` 为非负整数。"""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"参数 {name!r} 必须是 >=0 的整数，当前值: {value!r}")
+    return value
+
+
+def _require_non_negative_float(value: object, name: str) -> float:
+    """校验 ``value`` 为非负浮点数。"""
+    if not _is_number(value) or value < 0:
+        raise ValueError(f"参数 {name!r} 必须是 >=0 的数值，当前值: {value!r}")
     return float(value)
 
 
@@ -283,7 +312,7 @@ class AnnotationAPI:
         if cwd is None:
             cwd = str(Path(__file__).resolve().parent.parent)
 
-        cmd: List[str] = [executable, "scripts/vh.py", "datasets", "stats", "--input", folder]
+        cmd: List[str] = [executable, "-m", "scripts.vh", "datasets", "stats", "--input", folder]
         if include_label_stats:
             cmd.append("--label-stats")
         cmd.append("--json")
@@ -567,6 +596,8 @@ class TrainingAPI:
             test_ratio: float = 0.2,
             seed: int = 42,
             copy_mode: str = "copy",
+            export_empty_labels: bool = False,
+            export_unlabeled: bool = False,
     ) -> Dict[str, int]:
         """
         将 X-AnyLabeling 标注图片导出为 YOLO 数据集。
@@ -585,6 +616,8 @@ class TrainingAPI:
             copy_mode: 图片落盘策略，``copy`` / ``link`` / ``symlink``，
                 默认 ``copy``。``link`` 会优先尝试硬链接，失败时回退为复制；
                 ``symlink`` 会创建符号链接（在不支持的文件系统上可能出错）。
+            export_empty_labels: 导出空标签：即使图片没有标注对象也将其纳入数据集（标签文件为空）。
+            export_unlabeled: 导出未标注图片：将没有对应 JSON 标注文件的图片也纳入数据集（标签文件为空）。
 
         返回:
             ``{"train": int, "test": int}``，各集合实际落盘的样本数量。
@@ -642,27 +675,64 @@ class TrainingAPI:
             test_ratio=test_ratio,
             seed=seed,
             copy_mode=copy_mode_norm,
+            export_empty_labels=export_empty_labels,
+            export_unlabeled=export_unlabeled,
         )
 
     @staticmethod
     def train_model(
             dataset_yaml: str,
+            project: str,
+            name: str,
             task: str = "detect",
             model: str = "yolov8n",
             epochs: int = 100,
             imgsz: int = 640,
             batch: int = 16,
             device: Optional[str] = None,
-            project: Optional[str] = None,
-            name: Optional[str] = None,
             patience: int = 100,
             resume: bool = False,
             optimizer: str = "auto",
             lr0: float = 0.01,
+            lrf: float = 0.01,
+            momentum: float = 0.937,
+            weight_decay: float = 0.0005,
+            warmup_epochs: float = 3.0,
+            warmup_momentum: float = 0.8,
+            warmup_bias_lr: float = 0.1,
+            box: float = 7.5,
+            cls: float = 0.5,
+            dfl: float = 1.5,
+            label_smoothing: float = 0.0,
+            close_mosaic: int = 10,
+            amp: bool = True,
+            freeze: Optional[int] = None,
             workers: int = 8,
+            # 数据增强参数
+            hsv_h: float = 0.015,
+            hsv_s: float = 0.7,
+            hsv_v: float = 0.4,
+            degrees: float = 0.0,
+            translate: float = 0.1,
+            scale: float = 0.5,
+            shear: float = 0.0,
+            perspective: float = 0.0,
+            flipud: float = 0.0,
+            fliplr: float = 0.5,
+            mosaic: float = 1.0,
+            mixup: float = 0.0,
+            copy_paste: float = 0.0,
+            # SAHI 小目标优化参数
+            sahi_enabled: bool = False,
+            sahi_slice_height: int = 512,
+            sahi_slice_width: int = 512,
+            sahi_overlap_height_ratio: float = 0.25,
+            sahi_overlap_width_ratio: float = 0.25,
     ) -> str:
         """
         基于 Ultralytics YOLO 训练 detect / obb / segment / classify 模型。
+
+        此为向后兼容签名，推荐使用 :meth:`train_model_config` 配合 :class:`scripts.common.train_config.TrainConfig`。
 
         参数:
             dataset_yaml: 数据集配置：
@@ -688,7 +758,38 @@ class TrainingAPI:
             optimizer: 优化器名称，可选值见
                 :data:`scripts.common.config.SUPPORTED_OPTIMIZERS`，默认 ``auto``。
             lr0: 初始学习率，必须 > 0，默认 0.01。
+            lrf: 最终学习率因子（lr0 * lrf），必须在 (0, 1] 范围内，默认 0.01。
+            momentum: SGD 动量/Adam beta1，必须在 [0, 1] 范围内，默认 0.937。
+            weight_decay: L2 正则化系数（权重衰减），必须 >= 0，默认 0.0005。
+            warmup_epochs: 预热训练轮数（可以为小数），必须 >= 0，默认 3.0。
+            warmup_momentum: 预热阶段初始动量，必须在 [0, 1] 范围内，默认 0.8。
+            warmup_bias_lr: 预热阶段偏置学习率，必须 >= 0，默认 0.1。
+            box: 边界框损失权重，必须 > 0，默认 7.5。
+            cls: 分类损失权重，必须 > 0，默认 0.5。
+            dfl: 分布焦点损失权重，必须 > 0，默认 1.5。
+            label_smoothing: 标签平滑系数，必须在 [0, 1) 范围内，默认 0.0。
+            close_mosaic: 最后 N 个 epoch 关闭马赛克增强，必须 >= 0，默认 10。
+            amp: 是否启用自动混合精度训练，默认 True。
+            freeze: 冻结模型前 N 层（用于迁移学习），None 表示不冻结。
             workers: DataLoader worker 数量，必须 >= 0，默认 8。
+            hsv_h: HSV 色调增强系数，必须在 [0, 1] 范围内，默认 0.015。
+            hsv_s: HSV 饱和度增强系数，必须在 [0, 1] 范围内，默认 0.7。
+            hsv_v: HSV 明度增强系数，必须在 [0, 1] 范围内，默认 0.4。
+            degrees: 图像旋转角度（+/- 度），必须 >= 0，默认 0.0。
+            translate: 图像平移系数（+/- 分数），必须在 [0, 1] 范围内，默认 0.1。
+            scale: 图像缩放系数（+/- 增益），必须 >= 0，默认 0.5。
+            shear: 图像剪切角度（+/- 度），必须 >= 0，默认 0.0。
+            perspective: 图像透视变换系数，必须在 [0, 0.001] 范围内，默认 0.0。
+            flipud: 上下翻转概率，必须在 [0, 1] 范围内，默认 0.0。
+            fliplr: 左右翻转概率，必须在 [0, 1] 范围内，默认 0.5。
+            mosaic: 马赛克增强概率，必须在 [0, 1] 范围内，默认 1.0。
+            mixup: MixUp 增强概率，必须在 [0, 1] 范围内，默认 0.0。
+            copy_paste: 复制粘贴增强概率（仅分割任务），必须在 [0, 1] 范围内，默认 0.0。
+            sahi_enabled: 是否启用 SAHI 切片推理优化（主要用于推理阶段的小目标检测）。
+            sahi_slice_height: SAHI 切片高度（像素），必须 >= 32，默认 512。
+            sahi_slice_width: SAHI 切片宽度（像素），必须 >= 32，默认 512。
+            sahi_overlap_height_ratio: SAHI 垂直重叠比例，必须在 [0, 1] 范围内，默认 0.25。
+            sahi_overlap_width_ratio: SAHI 水平重叠比例，必须在 [0, 1] 范围内，默认 0.25。
 
         返回:
             训练结果目录路径（``best.pt`` 所在目录的父目录），
@@ -699,46 +800,9 @@ class TrainingAPI:
             ValueError: 参数非法（task / optimizer 不在枚举内、数值越界等）。
             RuntimeError: 未安装 ``ultralytics`` 或训练过程抛出异常时。
         """
-        _require_existing_file(dataset_yaml, "dataset_yaml")
-        _require_non_empty_str(model, "model")
-
-        task_norm = (task or "").lower()
-        valid_tasks = {"detect", "obb", "segment", "classify"}
-        if task_norm not in valid_tasks:
-            raise ValueError(
-                f"不支持的任务类型: {task!r}，仅支持 {sorted(valid_tasks)}"
-            )
-
-        if not isinstance(epochs, int) or epochs < 1:
-            raise ValueError(f"epochs 必须是 >=1 的整数，当前值: {epochs}")
-        if not isinstance(imgsz, int) or imgsz < 32:
-            raise ValueError(f"imgsz 必须是 >=32 的整数，当前值: {imgsz}")
-        if not isinstance(batch, int) or batch < 1:
-            raise ValueError(f"batch 必须是 >=1 的整数，当前值: {batch}")
-        if not isinstance(patience, int) or patience < 0:
-            raise ValueError(f"patience 必须是 >=0 的整数，当前值: {patience}")
-        if not isinstance(workers, int) or workers < 0:
-            raise ValueError(f"workers 必须是 >=0 的整数，当前值: {workers}")
-        if (
-                not isinstance(lr0, (int, float))
-                or isinstance(lr0, bool)
-                or lr0 <= 0
-        ):
-            raise ValueError(f"lr0 必须 > 0，当前值: {lr0}")
-
-        # 懒读取支持的优化器集合，避免类定义阶段引入额外耦合。
-        from scripts.common.config import SUPPORTED_OPTIMIZERS
-        if optimizer not in SUPPORTED_OPTIMIZERS:
-            raise ValueError(
-                f"不支持的优化器: {optimizer!r}，"
-                f"仅支持 {sorted(SUPPORTED_OPTIMIZERS)}"
-            )
-
-        from scripts.train.train import train_model
-
-        return train_model(
+        config = TrainConfig(
             dataset_yaml=dataset_yaml,
-            task=task_norm,
+            task=task,
             model=model,
             epochs=epochs,
             imgsz=imgsz,
@@ -750,7 +814,202 @@ class TrainingAPI:
             resume=resume,
             optimizer=optimizer,
             lr0=lr0,
+            lrf=lrf,
+            momentum=momentum,
+            weight_decay=weight_decay,
+            warmup_epochs=warmup_epochs,
+            warmup_momentum=warmup_momentum,
+            warmup_bias_lr=warmup_bias_lr,
+            box=box,
+            cls=cls,
+            dfl=dfl,
+            label_smoothing=label_smoothing,
+            close_mosaic=close_mosaic,
+            amp=amp,
+            freeze=freeze,
             workers=workers,
+            hsv_h=hsv_h,
+            hsv_s=hsv_s,
+            hsv_v=hsv_v,
+            degrees=degrees,
+            translate=translate,
+            scale=scale,
+            shear=shear,
+            perspective=perspective,
+            flipud=flipud,
+            fliplr=fliplr,
+            mosaic=mosaic,
+            mixup=mixup,
+            copy_paste=copy_paste,
+            sahi_enabled=sahi_enabled,
+            sahi_slice_height=sahi_slice_height,
+            sahi_slice_width=sahi_slice_width,
+            sahi_overlap_height_ratio=sahi_overlap_height_ratio,
+            sahi_overlap_width_ratio=sahi_overlap_width_ratio,
+        )
+        return TrainingAPI.train_model_config(config)
+
+    @staticmethod
+    def train_model_config(config: TrainConfig) -> str:
+        """
+        基于 Ultralytics YOLO 训练 detect / obb / segment / classify 模型（配置对象版）。
+
+        推荐使用此方法，配合 :class:`scripts.common.train_config.TrainConfig` 可获得
+        更好的类型提示、自动补全与配置复用能力。
+
+        参数:
+            config: 训练配置对象。
+
+        返回:
+            训练结果目录路径（``best.pt`` 所在目录的父目录），
+            若 Ultralytics 未暴露 ``trainer.save_dir`` 则返回空字符串。
+
+        异常:
+            FileNotFoundError: ``dataset_yaml`` 不是文件。
+            ValueError: 参数非法（task / optimizer 不在枚举内、数值越界等）。
+            RuntimeError: 未安装 ``ultralytics`` 或训练过程抛出异常时。
+        """
+        _require_existing_file(config.dataset_yaml, "dataset_yaml")
+        _require_non_empty_str(config.model, "model")
+        _require_non_empty_str(config.project, "project")
+        _require_non_empty_str(config.name, "name")
+
+        valid_tasks = {"detect", "obb", "segment", "classify"}
+        if config.task_norm not in valid_tasks:
+            raise ValueError(
+                f"不支持的任务类型: {config.task!r}，仅支持 {sorted(valid_tasks)}"
+            )
+
+        _require_positive_int(config.epochs, "epochs")
+        if config.imgsz < 32:
+            raise ValueError(f"imgsz 必须是 >=32 的整数，当前值: {config.imgsz}")
+        _require_positive_int(config.batch, "batch")
+        _require_non_negative_int(config.patience, "patience")
+        _require_non_negative_int(config.workers, "workers")
+        _require_in_range(config.lr0, "lr0", 0.0, float("inf"), inclusive_lo=False)
+        _require_in_range(config.lrf, "lrf", 0.0, 1.0, inclusive_lo=False)
+        _require_in_range(config.momentum, "momentum", 0.0, 1.0)
+        _require_non_negative_float(config.weight_decay, "weight_decay")
+        _require_non_negative_float(config.warmup_epochs, "warmup_epochs")
+        _require_in_range(config.warmup_momentum, "warmup_momentum", 0.0, 1.0)
+        _require_non_negative_float(config.warmup_bias_lr, "warmup_bias_lr")
+        _require_in_range(config.box, "box", 0.0, float("inf"), inclusive_lo=False)
+        _require_in_range(config.cls, "cls", 0.0, float("inf"), inclusive_lo=False)
+        _require_in_range(config.dfl, "dfl", 0.0, float("inf"), inclusive_lo=False)
+        _require_in_range(config.label_smoothing, "label_smoothing", 0.0, 1.0, inclusive_hi=False)
+        _require_non_negative_int(config.close_mosaic, "close_mosaic")
+        if config.freeze is not None:
+            _require_non_negative_int(config.freeze, "freeze")
+
+        # 数据增强参数验证
+        _require_in_range(config.hsv_h, "hsv_h", 0.0, 1.0)
+        _require_in_range(config.hsv_s, "hsv_s", 0.0, 1.0)
+        _require_in_range(config.hsv_v, "hsv_v", 0.0, 1.0)
+        _require_non_negative_float(config.degrees, "degrees")
+        _require_in_range(config.translate, "translate", 0.0, 1.0)
+        _require_non_negative_float(config.scale, "scale")
+        _require_non_negative_float(config.shear, "shear")
+        _require_in_range(config.perspective, "perspective", 0.0, 0.001)
+        _require_in_range(config.flipud, "flipud", 0.0, 1.0)
+        _require_in_range(config.fliplr, "fliplr", 0.0, 1.0)
+        _require_in_range(config.mosaic, "mosaic", 0.0, 1.0)
+        _require_in_range(config.mixup, "mixup", 0.0, 1.0)
+        _require_in_range(config.copy_paste, "copy_paste", 0.0, 1.0)
+
+        # SAHI 参数验证
+        if config.sahi_enabled:
+            if config.sahi_slice_height < 32:
+                raise ValueError(
+                    f"sahi_slice_height 必须是 >=32 的整数，当前值: {config.sahi_slice_height}"
+                )
+            if config.sahi_slice_width < 32:
+                raise ValueError(
+                    f"sahi_slice_width 必须是 >=32 的整数，当前值: {config.sahi_slice_width}"
+                )
+            _require_in_range(
+                config.sahi_overlap_height_ratio, "sahi_overlap_height_ratio", 0.0, 1.0
+            )
+            _require_in_range(
+                config.sahi_overlap_width_ratio, "sahi_overlap_width_ratio", 0.0, 1.0
+            )
+
+        # 懒读取支持的优化器集合，避免类定义阶段引入额外耦合。
+        from scripts.common.config import SUPPORTED_OPTIMIZERS
+        if config.optimizer_norm not in SUPPORTED_OPTIMIZERS:
+            raise ValueError(
+                f"不支持的优化器: {config.optimizer!r}，"
+                f"仅支持 {sorted(SUPPORTED_OPTIMIZERS)}"
+            )
+
+        from scripts.train.train import train_model
+
+        return train_model(**config.to_train_kwargs())
+
+
+# ---------------------------------------------------------------------------
+# PredictAPI
+# ---------------------------------------------------------------------------
+class PredictAPI:
+    """模型预测相关 API。"""
+
+    @staticmethod
+    def predict(
+            model_path: str,
+            input_path: str,
+            output_dir: str,
+            threshold: float = 0.25,
+            task: str = "detect",
+            device: Optional[str] = None,
+            iou: float = 0.45,
+    ) -> dict:
+        """
+        使用 YOLO 模型对图片或视频进行预测，将可视化结果保存到输出目录。
+
+        参数:
+            model_path: YOLO 模型权重文件路径（.pt）。
+            input_path: 输入图片、图片目录或视频文件路径。
+            output_dir: 输出目录，用于保存预测结果。
+            threshold: 置信度阈值，必须位于 (0, 1]，默认 0.25。
+            task: 任务类型，detect / obb / segment / classify，默认 detect。
+            device: 推理设备，例如 0、cpu，默认自动选择。
+            iou: NMS IoU 阈值，必须位于 (0, 1]，默认 0.45。
+
+        返回:
+            包含 total / success / failed / input_type 等键的字典。
+
+        异常:
+            FileNotFoundError: ``model_path`` 或 ``input_path`` 不存在。
+            ValueError: 参数非法（task 不在枚举内、阈值越界等）。
+            RuntimeError: 未安装 ``ultralytics`` 或推理过程抛出异常时。
+        """
+        _require_existing_file(model_path, "model_path")
+        _require_non_empty_str(input_path, "input_path")
+        _require_non_empty_str(output_dir, "output_dir")
+
+        input_p = Path(input_path)
+        if not input_p.exists():
+            raise FileNotFoundError(f"输入路径不存在: {input_path}")
+
+        task_norm = (task or "").lower()
+        valid_tasks = {"detect", "obb", "segment", "classify"}
+        if task_norm not in valid_tasks:
+            raise ValueError(
+                f"不支持的任务类型: {task!r}，仅支持 {sorted(valid_tasks)}"
+            )
+
+        _require_in_range(threshold, "threshold", 0.0, 1.0, inclusive_lo=False)
+        _require_in_range(iou, "iou", 0.0, 1.0, inclusive_lo=False)
+
+        from scripts.predict.predict import predict
+
+        return predict(
+            model_path=model_path,
+            input_path=input_path,
+            output_dir=output_dir,
+            threshold=threshold,
+            task=task_norm,
+            device=device,
+            iou=iou,
         )
 
 
@@ -759,6 +1018,102 @@ class TrainingAPI:
 # ---------------------------------------------------------------------------
 class ImageAPI:
     """图片处理相关 API。"""
+
+    @staticmethod
+    def augment(
+            input_dir: str,
+            output_dir: str,
+            rotate_enabled: bool = True,
+            rotate_degrees: float = 30,
+            rotate_prob: float = 0.5,
+            cut_enabled: bool = True,
+            cut_scale: float = 0.3,
+            cut_ratio: float = 1.5,
+            cut_prob: float = 0.5,
+            cut_resize: bool = True,
+            occlusion_enabled: bool = True,
+            occlusion_count: int = 3,
+            occlusion_size: float = 0.15,
+            occlusion_prob: float = 0.5,
+            channel_enabled: bool = True,
+            channel_prob: float = 0.5,
+            seed: Optional[int] = None,
+            ext: str = "jpg",
+            quality: int = 95,
+            prefix: str = "aug",
+    ) -> List[str]:
+        """
+        对目录下图片执行数据增强（旋转/切割/遮挡/通道变换）。
+
+        参数:
+            input_dir: 输入图片目录。
+            output_dir: 输出目录（不存在自动创建）。
+            rotate_enabled: 是否启用随机旋转。
+            rotate_degrees: 最大旋转角度。
+            rotate_prob: 旋转应用概率。
+            cut_enabled: 是否启用随机切割。
+            cut_scale: 裁剪面积缩放因子 0~1。
+            cut_ratio: 裁剪宽高比范围 >=1。
+            cut_prob: 切割应用概率。
+            cut_resize: 切割后是否缩放回原始尺寸。
+            occlusion_enabled: 是否启用随机遮挡。
+            occlusion_count: 遮挡块数量。
+            occlusion_size: 遮挡块尺寸比例 0~1。
+            occlusion_prob: 遮挡应用概率。
+            channel_enabled: 是否启用通道变换。
+            channel_prob: 通道变换应用概率。
+            seed: 随机种子。
+            ext: 输出图片格式，默认 jpg。
+            quality: 输出图片质量 1-100，默认 95。
+            prefix: 输出文件名前缀，默认 ``"aug"``。
+
+        返回:
+            保存的图片路径列表。
+
+        异常:
+            FileNotFoundError: ``input_dir`` 不存在或不是目录。
+            ValueError: 参数非法。
+        """
+        _require_existing_dir(input_dir, "input_dir")
+        _require_non_empty_str(output_dir, "output_dir")
+        _require_in_range(quality, "quality", 1, 100)
+        if rotate_degrees < 0:
+            raise ValueError(f"rotate_degrees 必须 >= 0，当前值: {rotate_degrees}")
+        _require_in_range(cut_scale, "cut_scale", 0, 1)
+        if cut_ratio < 1:
+            raise ValueError(f"cut_ratio 必须 >= 1，当前值: {cut_ratio}")
+        if occlusion_count < 0:
+            raise ValueError(f"occlusion_count 必须 >= 0，当前值: {occlusion_count}")
+        _require_in_range(occlusion_size, "occlusion_size", 0, 1)
+        _require_in_range(rotate_prob, "rotate_prob", 0, 1)
+        _require_in_range(cut_prob, "cut_prob", 0, 1)
+        _require_in_range(occlusion_prob, "occlusion_prob", 0, 1)
+        _require_in_range(channel_prob, "channel_prob", 0, 1)
+
+        from scripts.images.augment import augment_images
+
+        return augment_images(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            rotate_enabled=rotate_enabled,
+            rotate_degrees=rotate_degrees,
+            rotate_prob=rotate_prob,
+            cut_enabled=cut_enabled,
+            cut_scale=cut_scale,
+            cut_ratio=cut_ratio,
+            cut_prob=cut_prob,
+            cut_resize=cut_resize,
+            occlusion_enabled=occlusion_enabled,
+            occlusion_count=occlusion_count,
+            occlusion_size=occlusion_size,
+            occlusion_prob=occlusion_prob,
+            channel_enabled=channel_enabled,
+            channel_prob=channel_prob,
+            seed=seed,
+            ext=ext,
+            quality=quality,
+            prefix=prefix,
+        )
 
     @staticmethod
     def deduplicate(
@@ -770,12 +1125,18 @@ class ImageAPI:
             batch_size: int = 8,
             backend: str = "vit",
             hash_size: int = 16,
+            grid_size: int = 1,
     ) -> dict:
         """
         对目录下相似图片进行去重。
 
         基于图片特征向量两两计算余弦相似度，按顺序保留首次出现的图片，
         将后续相似度 ``>= threshold`` 的图片视为重复。
+
+        当 ``grid_size > 1`` 时，每张图被均匀切分为 ``grid_size × grid_size``
+        个子图块，逐块比较特征。**只有所有对应子块的相似度均 >= threshold**
+        才判为重复。这使得小缺陷（划痕、异物等）所在的局部区域变化时
+        不会被误删。
 
         参数:
             folder: 待去重的图片目录（不递归子目录）。
@@ -796,6 +1157,8 @@ class ImageAPI:
                   或纯 CPU 环境。
             hash_size: ``phash`` 后端的哈希尺寸，必须 >= 1，默认 16
                 （对应 256 维向量）。仅 ``phash`` 后端使用。
+            grid_size: 网格分块大小。1 表示不分块（原始行为）；N 表示
+                将每张图切为 N×N 格，逐块比较。默认 1。
 
         返回:
             ``{"keep": List[Path], "duplicates": List[Path]}``，
@@ -803,8 +1166,8 @@ class ImageAPI:
 
         异常:
             FileNotFoundError: ``folder`` 不存在或不是目录。
-            ValueError: 参数非法（threshold / batch_size / hash_size 越界、
-                backend 不在枚举内、``delete`` 与 ``move_to`` 同时设置等）。
+            ValueError: 参数非法（threshold / batch_size / hash_size / grid_size
+                越界、backend 不在枚举内、``delete`` 与 ``move_to`` 同时设置等）。
         """
         _require_existing_dir(folder, "folder")
         _require_in_range(threshold, "threshold", 0.0, 1.0, inclusive_lo=False)
@@ -831,6 +1194,10 @@ class ImageAPI:
             raise ValueError(
                 f"hash_size 必须是 >=1 的整数，当前值: {hash_size}"
             )
+        if not isinstance(grid_size, int) or grid_size < 1:
+            raise ValueError(
+                f"grid_size 必须是 >=1 的整数，当前值: {grid_size}"
+            )
         if backend_norm == "vit":
             _require_non_empty_str(model_name, "model_name")
 
@@ -845,4 +1212,5 @@ class ImageAPI:
             batch_size=batch_size,
             backend=backend_norm,
             hash_size=hash_size,
+            grid_size=grid_size,
         )

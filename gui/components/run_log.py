@@ -14,7 +14,7 @@
 - 通过 ``log_dir`` + ``log_script_name`` 参数把整次运行的日志另存为
   ``<log_dir>/YYYYMMDD_HHMMSS_<script>.log`` 文件，方便事后追溯。
 
-视觉风格统一来自 :mod:`gui.theme` 与 :mod:`gui.widgets`，本模块不再
+视觉风格统一来自 :mod:`gui.theme` 与 :mod:`gui.components.widgets`，本模块不再
 书写内联样式。
 """
 
@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import (
 )
 
 from gui import theme
-from gui.widgets import DangerButton, SecondaryButton
+from gui.components.widgets import DangerButton, SecondaryButton
 
 
 # 用于剥离控制台中的 ANSI 颜色 / 控制序列，避免日志文件里出现乱码 ``\x1b[31m`` 等
@@ -103,13 +103,14 @@ class RunLogDialog(QDialog):
             filename = f"{ts}_{self._safe_filename(self._log_script_name)}.log"
             self._log_file_path = self._log_dir / filename
             self._log_file = self._log_file_path.open(
-                "w", encoding="utf-8", buffering=1  # 行缓冲，便于实时查看
+                "w", encoding="utf-8"  # 移除行缓冲，在Windows上不可靠
             )
         except OSError as exc:
             # 写入磁盘失败时不应阻断任务运行，仅在控制台和窗口上提示一次
             self._log_file = None
             self._log_file_path = None
-            print(f"[RunLogDialog] 创建日志文件失败：{exc}")
+            import logging
+            logging.warning(f"[RunLogDialog] 创建日志文件失败：{exc}")
 
     def _write_log_file(self, text: str) -> None:
         """将一段文本追加到日志文件，并清理 ANSI 序列。"""
@@ -117,6 +118,7 @@ class RunLogDialog(QDialog):
             return
         try:
             self._log_file.write(_sanitize_for_log(text))
+            self._log_file.flush()  # 显式刷新，确保实时写入
         except (OSError, ValueError):
             # 文件可能已被外部关闭/磁盘满，安全降级
             try:
@@ -198,6 +200,8 @@ class RunLogDialog(QDialog):
         # 进度由 scripts.common.logging.ProgressLogger 输出整行日志（不使用 \r 覆盖），
         # 因此 GUI 日志面板能够正常显示进度。
         env.insert("PYTHONUNBUFFERED", "1")
+        # 设置子进程使用UTF-8编码输出，解决Windows环境下中文乱码问题
+        env.insert("PYTHONIOENCODING", "utf-8")
         return env
 
     def _start_process(self):
@@ -227,11 +231,19 @@ class RunLogDialog(QDialog):
         self.status_label.setText("任务运行中...")
         self._set_status_variant("running")
 
-    def _append_output(self):
+    def _append_output(self) -> None:
+        """读取子进程标准输出并追加到日志面板。"""
         data = self.process.readAllStandardOutput().data()
         try:
-            text = data.decode("utf-8", errors="replace")
-        except Exception:
+            # 尝试多种编码解码，优先使用UTF-8，然后尝试GBK（Windows中文系统默认）
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    text = data.decode("gbk")
+                except UnicodeDecodeError:
+                    text = data.decode("utf-8", errors="replace")
+        except (UnicodeDecodeError, AttributeError):
             text = str(data)
         self._append_log(text)
 

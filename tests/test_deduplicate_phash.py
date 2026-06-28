@@ -126,3 +126,116 @@ def test_phash_empty_folder_returns_empty(tmp_path):
     )
 
     assert result == {"keep": [], "duplicates": []}
+
+
+# ---------------------------------------------------------------------------
+# 网格分块（grid）模式测试
+# ---------------------------------------------------------------------------
+
+def _make_grid_different(tmp_path, prefix, size=(128, 128), diff_tile=None):
+    """生成测试用图片，可选择在某个子图块上叠加白色方块造成局部差异。
+
+    Args:
+        diff_tile: ``(row, col)`` 坐标，在该位置叠加白色方块；
+                   ``None`` 表示不叠加。
+    """
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", size, (200, 200, 200))  # 浅灰背景
+    if diff_tile is not None:
+        draw = ImageDraw.Draw(img)
+        tile_w = size[0] // 2
+        tile_h = size[1] // 2
+        left = diff_tile[1] * tile_w
+        top = diff_tile[0] * tile_h
+        draw.rectangle(
+            [left + 4, top + 4, left + tile_w // 2, top + tile_h // 2],
+            fill=(255, 255, 255),
+        )
+    path = tmp_path / f"{prefix}.jpg"
+    img.save(path, format="JPEG", quality=95)
+    return path
+
+
+def test_phash_grid_keeps_images_with_local_diff(tmp_path):
+    """两张图仅局部（一个子图块）不同时，grid 模式应保留两者。"""
+    folder = tmp_path / "imgs"
+    folder.mkdir()
+
+    # 图 A：纯灰背景
+    _make_grid_different(folder, "a", diff_tile=None)
+    # 图 B：右上角子图块有白色方块（小目标缺陷模拟）
+    _make_grid_different(folder, "b", diff_tile=(0, 1))
+
+    # 常规模式（无 grid）→ 全局相似度高，可能误判为重复
+    result_no_grid = deduplicate(
+        folder=str(folder),
+        threshold=0.95,
+        backend="phash",
+        hash_size=8,
+        grid_size=1,
+    )
+
+    # grid 模式（2×2）→ 逐格比较，右上格子相似度低，应保留两张
+    result_grid = deduplicate(
+        folder=str(folder),
+        threshold=0.95,
+        backend="phash",
+        hash_size=8,
+        grid_size=2,
+    )
+
+    # grid 模式下应有 2 张保留
+    assert len(result_grid["keep"]) == 2, (
+        f"grid 模式应保留 2 张，实际保留 {len(result_grid['keep'])}"
+    )
+    assert len(result_grid["duplicates"]) == 0, (
+        f"grid 模式不应判为重复，实际重复 {len(result_grid['duplicates'])}"
+    )
+
+
+def test_phash_grid_marks_identical_images_as_duplicates(tmp_path):
+    """两张完全相同的图片在 grid 模式下仍应判为重复。"""
+    folder = tmp_path / "imgs"
+    folder.mkdir()
+
+    _make_grid_different(folder, "a", diff_tile=None)
+    _make_grid_different(folder, "b", diff_tile=None)
+
+    result = deduplicate(
+        folder=str(folder),
+        threshold=0.95,
+        backend="phash",
+        hash_size=8,
+        grid_size=2,
+    )
+
+    assert len(result["keep"]) == 1
+    assert len(result["duplicates"]) == 1
+    assert {p.name for p in result["keep"]} | {p.name for p in result["duplicates"]} == {"a.jpg", "b.jpg"}
+
+
+def test_phash_grid_size_1_equals_original(tmp_path):
+    """grid_size=1 时行为应与不指定时一致。"""
+    folder = tmp_path / "imgs"
+    folder.mkdir()
+
+    from PIL import Image
+    Image.new("RGB", (64, 64), (120, 30, 200)).save(folder / "a.jpg", format="JPEG", quality=95)
+    Image.new("RGB", (64, 64), (120, 30, 200)).save(folder / "b.jpg", format="JPEG", quality=95)
+
+    ref = deduplicate(
+        folder=str(folder),
+        threshold=0.95,
+        backend="phash",
+        hash_size=8,
+    )
+    grid = deduplicate(
+        folder=str(folder),
+        threshold=0.95,
+        backend="phash",
+        hash_size=8,
+        grid_size=1,
+    )
+
+    assert ref == grid

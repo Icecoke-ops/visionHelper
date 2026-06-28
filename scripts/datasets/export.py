@@ -35,6 +35,7 @@ from scripts.common.config import (
 from scripts.common.logging import ProgressLogger, log
 from scripts.common.utils import (
     is_annotation_file as _is_annotation_file,
+    is_image_file as _is_image_file,
     load_annotation as _load_annotation,
     resolve_image_path as _resolve_image_path,
 )
@@ -359,6 +360,8 @@ def export_yolo_dataset(
         test_ratio: float = 0.2,
         seed: int = 42,
         copy_mode: str = "copy",
+        export_empty_labels: bool = False,
+        export_unlabeled: bool = False,
 ) -> Dict[str, int]:
     """将工作目录下已标注的图片导出为 YOLO 数据集。"""
     input_path = Path(input_dir)
@@ -385,11 +388,12 @@ def export_yolo_dataset(
 
     labels = _collect_labels(input_path, task)
     if not labels:
-        raise RuntimeError(f"目录下未找到任何有效标注: {input_dir}")
+        if not export_empty_labels and not export_unlabeled:
+            raise RuntimeError(f"目录下未找到任何有效标注: {input_dir}")
 
     class_map = {label: idx for idx, label in enumerate(sorted(labels))}
 
-    annotated_samples: List[Tuple[Path, Path, dict]] = []
+    annotated_samples: List[Tuple[Path, Optional[Path], dict]] = []
     for ann_path in input_path.iterdir():
         if not _is_annotation_file(ann_path):
             continue
@@ -400,6 +404,12 @@ def export_yolo_dataset(
         if image_path is None:
             continue
         annotated_samples.append((image_path, ann_path, data))
+
+    if export_unlabeled:
+        covered_stems = {img_path.stem for img_path, _, _ in annotated_samples}
+        for f in sorted(input_path.iterdir(), key=lambda p: p.name):
+            if _is_image_file(f) and f.stem not in covered_stems:
+                annotated_samples.append((f, None, {}))
 
     if not annotated_samples:
         raise RuntimeError(f"未找到任何与图片匹配的有效标注: {input_dir}")
@@ -455,8 +465,8 @@ def export_yolo_dataset(
     )
     for i, (image_path, ann_path, data) in enumerate(annotated_samples):
         split = split_map[i]
-        img_w = float(data.get("imageWidth") or 0)
-        img_h = float(data.get("imageHeight") or 0)
+        img_w = float(data.get("imageWidth", 0))
+        img_h = float(data.get("imageHeight", 0))
 
         if not (img_w and img_h):
             try:
@@ -571,6 +581,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "symlink=软链接（跨文件系统也可，需目标文件系统支持）。"
         ),
     )
+    parser.add_argument(
+        "--export-empty-labels",
+        action="store_true",
+        help="导出空标签：即使图片没有标注对象也将其纳入数据集（标签文件为空）",
+    )
+    parser.add_argument(
+        "--export-unlabeled",
+        action="store_true",
+        help="导出未标注图片：将没有对应 JSON 标注文件的图片也纳入数据集（标签文件为空）",
+    )
     return parser
 
 
@@ -632,6 +652,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             test_ratio=args.test_ratio,
             seed=args.seed,
             copy_mode=args.copy_mode,
+            export_empty_labels=args.export_empty_labels,
+            export_unlabeled=args.export_unlabeled,
         )
     except KeyboardInterrupt:
         log("[已取消] 用户中断，输出目录可能处于不完整状态。", stream=sys.stderr)

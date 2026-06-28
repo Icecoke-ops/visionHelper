@@ -34,7 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-o", "--output",
         type=str,
-        default=None,
+        required=True,
         help="输出目录",
     )
     return parser

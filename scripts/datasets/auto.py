@@ -34,7 +34,11 @@ from scripts.common.config import (
     SUPPORTED_TASKS,
 )
 from scripts.common.logging import ProgressLogger, log
-from scripts.common.utils import discover_trained_models, is_image_file
+from scripts.common.utils import (
+    discover_trained_models,
+    find_model_class_names,
+    is_image_file,
+)
 
 
 def _check_image_readable(image_path: Path) -> bool:
@@ -58,16 +62,6 @@ def _check_image_readable(image_path: Path) -> bool:
 
 
 __all__ = ["auto_annotate", "main"]
-
-
-def _find_model_class_names(model) -> List[str]:
-    """从 Ultralytics YOLO 模型中提取类别名称列表。"""
-    names = getattr(model, "names", None)
-    if isinstance(names, dict):
-        return [names[i] for i in sorted(names)]
-    if isinstance(names, (list, tuple)):
-        return list(names)
-    return []
 
 
 def _box_to_rectangle_points(xyxy: List[float]) -> List[List[float]]:
@@ -121,7 +115,6 @@ def _result_image_size(result, image_path: Path) -> Tuple[int, int]:
         raise RuntimeError(
             f"无法读取图片尺寸 {image_path.name}: {exc}"
         ) from exc
-
 
 
 def _build_annotation(
@@ -382,7 +375,7 @@ def auto_annotate(
         raise RuntimeError("未安装 ultralytics，请先执行：pip install ultralytics") from exc
 
     yolo_model = YOLO(str(model_file))
-    class_names = _find_model_class_names(yolo_model)
+    class_names = find_model_class_names(yolo_model)
 
     type_checker = AnnotationTypeChecker(tolerance_seconds=tolerance_seconds)
 
@@ -620,10 +613,10 @@ def _validate_args(args: argparse.Namespace) -> None:
             stream=sys.stderr,
         )
 
-    if not (0.0 <= args.threshold <= 1.0):
-        raise ValueError(f"--threshold 必须在 [0, 1] 之间，当前为 {args.threshold}")
-    if not (0.0 <= args.iou <= 1.0):
-        raise ValueError(f"--iou 必须在 [0, 1] 之间，当前为 {args.iou}")
+    if not (0.0 < args.threshold <= 1.0):
+        raise ValueError(f"--threshold 必须在 (0, 1] 之间，当前为 {args.threshold}")
+    if not (0.0 < args.iou <= 1.0):
+        raise ValueError(f"--iou 必须在 (0, 1] 之间，当前为 {args.iou}")
     if args.batch_size is not None and args.batch_size < 1:
         raise ValueError(f"--batch-size 必须为正整数，当前为 {args.batch_size}")
     if args.tolerance_seconds is not None and args.tolerance_seconds < 0:

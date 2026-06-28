@@ -116,6 +116,7 @@ def app_font() -> QFont:
 #
 # Qt 5 的 QSS 在 sub-control 中绘制 CSS 三角形（border-trick）并不稳定，
 # 因此这里把箭头以 SVG 的形式写入临时文件，再通过 ``image: url(...)`` 引用。
+# 使用内容哈希作为文件名，避免重复写入；启动时清理旧缓存文件。
 # ---------------------------------------------------------------------------
 
 _ARROW_SVG_TEMPLATE = (
@@ -136,18 +137,38 @@ def _arrow_cache_dir() -> Path:
     return cache_dir
 
 
+
 def _write_arrow_svg(name: str, points: str, color: str) -> str:
-    """写入 SVG 箭头到临时文件并返回 Qt QSS 可用的 URL 路径（正斜杠）。"""
-    path = _arrow_cache_dir() / f"{name}.svg"
+    """写入 SVG 箭头到临时文件并返回 Qt QSS 可用的 URL 路径（正斜杠）。
+
+    文件名基于内容哈希，相同内容复用同一文件，避免临时目录无限增长。
+    """
+    import hashlib
+    content = f"{name}:{points}:{color}"
+    content_hash = hashlib.md5(content.encode()).hexdigest()[:12]
+    path = _arrow_cache_dir() / f"{name}_{content_hash}.svg"
     svg = _ARROW_SVG_TEMPLATE.format(points=points, color=color)
-    # 仅当内容变化时才写盘，避免每次启动都触发 IO
+    # 仅当内容变化时才写盘
     try:
         if not path.exists() or path.read_text(encoding="utf-8") != svg:
             path.write_text(svg, encoding="utf-8")
     except OSError:
         path.write_text(svg, encoding="utf-8")
-    # QSS 中 url(...) 推荐使用正斜杠，兼容 Windows
     return path.as_posix()
+
+
+def _cleanup_old_arrow_cache() -> None:
+    """清理旧的箭头缓存文件（保留最近 20 个），防止临时目录无限增长。"""
+    try:
+        cache_dir = _arrow_cache_dir()
+        files = sorted(cache_dir.glob("*.svg"), key=lambda p: p.stat().st_mtime)
+        for f in files[:-20]:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
 
 
 def _build_arrow_assets() -> dict:
@@ -163,6 +184,9 @@ def _build_arrow_assets() -> dict:
         ),
     }
 
+
+# 延迟初始化缓存：避免在模块导入时触发文件 I/O
+_ARROW_CACHE: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -191,34 +215,45 @@ _QSS_MENU = """
 QMenuBar {
     background-color: %(card)s;
     border-bottom: 1px solid %(border)s;
-    padding: 2px 4px;
+    padding: 4px 8px;
 }
 QMenuBar::item {
-    padding: 6px 14px;
+    padding: 8px 16px;
     background-color: transparent;
-    color: %(text)s;
+    color: %(text_sec)s;
     border-radius: %(r_sm)dpx;
+    margin: 2px 1px;
 }
 QMenuBar::item:selected { background-color: %(hover)s; color: %(primary)s; }
 QMenuBar::item:pressed  { background-color: %(sel)s;  color: %(primary_pressed)s; }
-QMenu { background-color: %(card)s; border: 1px solid %(border)s; padding: 4px 0; }
-QMenu::item { padding: 6px 18px; }
+QMenu {
+    background-color: %(card)s;
+    border: 1px solid %(border)s;
+    padding: 6px 0;
+    border-radius: %(r_md)dpx;
+}
+QMenu::item {
+    padding: 8px 24px 8px 16px;
+    color: %(text)s;
+}
 QMenu::item:selected { background-color: %(hover)s; color: %(primary)s; }
+QMenu::separator { height: 1px; background: %(border)s; margin: 4px 8px; }
 """
 
 _QSS_INPUT = """
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     background-color: %(card)s;
     border: 1px solid %(border_strong)s;
-    border-radius: %(r_sm)dpx;
-    padding: 4px 8px;
+    border-radius: %(r_md)dpx;
+    padding: 6px 10px;
     min-height: 22px;
     selection-background-color: %(sel)s;
     selection-color: %(text)s;
     color: %(text)s;
 }
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
-    border: 1px solid %(primary)s;
+    border: 2px solid %(primary)s;
+    padding: 5px 9px;
 }
 QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
     background-color: %(hover)s; color: %(muted)s;
@@ -228,13 +263,13 @@ QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: center right;
     border: none;
-    width: 20px;
+    width: 24px;
 }
 QComboBox::down-arrow {
     image: url(%(arrow_down)s);
     width: 10px;
     height: 10px;
-    margin-right: 6px;
+    margin-right: 8px;
 }
 QComboBox::down-arrow:on {
     image: url(%(arrow_up)s);
@@ -242,29 +277,30 @@ QComboBox::down-arrow:on {
 QComboBox QAbstractItemView {
     background-color: %(card)s;
     border: 1px solid %(border)s;
+    border-radius: %(r_md)dpx;
     selection-background-color: %(sel)s;
     selection-color: %(text)s;
     outline: 0;
-    padding: 2px;
+    padding: 4px;
 }
 QSpinBox, QDoubleSpinBox {
-    padding-right: 22px;
+    padding-right: 26px;
 }
 QSpinBox::up-button, QDoubleSpinBox::up-button {
     subcontrol-origin: border;
     subcontrol-position: top right;
-    width: 18px;
+    width: 20px;
     border-left: 1px solid %(border)s;
     border-bottom: 1px solid %(border)s;
-    border-top-right-radius: %(r_sm)dpx;
+    border-top-right-radius: %(r_md)dpx;
     background-color: %(card)s;
 }
 QSpinBox::down-button, QDoubleSpinBox::down-button {
     subcontrol-origin: border;
     subcontrol-position: bottom right;
-    width: 18px;
+    width: 20px;
     border-left: 1px solid %(border)s;
-    border-bottom-right-radius: %(r_sm)dpx;
+    border-bottom-right-radius: %(r_md)dpx;
     background-color: %(card)s;
 }
 QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
@@ -302,9 +338,10 @@ QPushButton {
     background-color: %(card)s;
     color: %(text)s;
     border: 1px solid %(border_strong)s;
-    border-radius: %(r_sm)dpx;
-    padding: 5px 14px;
-    min-height: 22px;
+    border-radius: %(r_md)dpx;
+    padding: 6px 16px;
+    min-height: 24px;
+    font-weight: 500;
 }
 QPushButton:hover    { background-color: %(hover)s; border-color: %(primary)s; color: %(primary)s; }
 QPushButton:pressed  { background-color: %(sel)s;  border-color: %(primary_pressed)s; color: %(primary_pressed)s; }
@@ -316,7 +353,9 @@ QPushButton[variant="primary"] {
     background-color: %(primary)s;
     color: %(inverse)s;
     border: 1px solid %(primary)s;
+    border-radius: %(r_md)dpx;
     font-weight: bold;
+    padding: 6px 20px;
 }
 QPushButton[variant="primary"]:hover    { background-color: %(primary_hover)s;   border-color: %(primary_hover)s;   color: %(inverse)s; }
 QPushButton[variant="primary"]:pressed  { background-color: %(primary_pressed)s; border-color: %(primary_pressed)s; color: %(inverse)s; }
@@ -328,7 +367,9 @@ QPushButton[variant="success"] {
     background-color: %(success)s;
     color: %(inverse)s;
     border: 1px solid %(success)s;
+    border-radius: %(r_md)dpx;
     font-weight: bold;
+    padding: 6px 20px;
 }
 QPushButton[variant="success"]:hover    { background-color: %(success_hover)s;   border-color: %(success_hover)s;   color: %(inverse)s; }
 QPushButton[variant="success"]:pressed  { background-color: %(success_pressed)s; border-color: %(success_pressed)s; color: %(inverse)s; }
@@ -492,6 +533,7 @@ QFrame[variant="hint"] {
     background-color: %(bg_hint)s;
     border: 1px solid %(bg_hint_border)s;
     border-radius: %(r_md)dpx;
+    padding: 4px;
 }
 QFrame[variant="separator"] {
     background-color: %(border)s;
@@ -503,6 +545,7 @@ QFrame[variant="topbar"] {
     background-color: %(card)s;
     border: none;
     border-bottom: 1px solid %(border)s;
+    padding: 2px 0;
 }
 QLabel[variant="title"] {
     color: %(text)s;
@@ -510,24 +553,69 @@ QLabel[variant="title"] {
     font-weight: bold;
 }
 QLabel[variant="section"] {
-    color: %(text)s;
+    color: %(primary)s;
     font-size: %(title_pt)dpt;
     font-weight: bold;
-    padding: 2px 0;
+    padding: 4px 0 2px 0;
 }
 QLabel[variant="muted"] { color: %(muted)s; font-size: %(small_pt)dpt; }
-QLabel[variant="hint-title"] { color: %(primary_pressed)s; font-weight: bold; }
+QLabel[variant="hint-title"] { color: %(primary_pressed)s; font-weight: bold; font-size: 11pt; }
 QLabel[variant="hint-text"] { color: %(text_sec)s; font-size: %(small_pt)dpt; }
 QLabel[variant="stat-title"] { color: %(text_sec)s; font-weight: bold; }
-QLabel[variant="stat-value"] { color: %(primary)s; font-weight: bold; }
-QLabel[variant="stat-value-success"] { color: %(success)s; font-weight: bold; }
+QLabel[variant="stat-value"] { color: %(primary)s; font-weight: bold; font-size: %(title_pt)dpt; }
+QLabel[variant="stat-value-success"] { color: %(success)s; font-weight: bold; font-size: %(title_pt)dpt; }
 QLabel[variant="status-running"] { color: %(info)s; font-weight: bold; }
 QLabel[variant="status-success"] { color: %(success)s; font-weight: bold; }
 QLabel[variant="status-error"]   { color: %(danger)s;  font-weight: bold; }
+
+/* ===== Welcome Page ===== */
+QLabel#welcomeTitle {
+    color: %(text)s;
+    font-size: 22pt;
+    font-weight: bold;
+    padding: 0 0 4px 0;
+}
+QLabel#welcomeSubtitle {
+    color: %(text_sec)s;
+    font-size: 11pt;
+    padding: 0 0 8px 0;
+}
+QListWidget#welcomeList {
+    background-color: %(card)s;
+    border: 1px solid %(border)s;
+    border-radius: %(r_lg)dpx;
+    padding: 6px;
+    outline: 0;
+}
+QListWidget#welcomeList::item {
+    padding: 0px;
+    border: none;
+}
+QFrame#welcomeRow {
+    background-color: transparent;
+    border-radius: %(r_md)dpx;
+}
+QFrame#welcomeRow:hover {
+    background-color: %(hover)s;
+}
+QLabel#welcomeEmpty {
+    color: %(muted)s;
+    font-size: %(body_pt)dpt;
+    padding: 20px 0;
+}
+QWidget#welcomeFooter {
+    background-color: transparent;
+}
+
+/* ===== Topbar ===== */
+QFrame[variant="topbar"] > QLabel {
+    font-weight: bold;
+}
 """
 
 
 def _qss_format_args() -> dict:
+    """构造 QSS 格式化参数字典，延迟初始化箭头 SVG 资源。"""
     args = {
         "text": COLOR_TEXT_PRIMARY,
 
@@ -564,12 +652,15 @@ def _qss_format_args() -> dict:
         "r_md": RADIUS_MD,
         "r_lg": RADIUS_LG,
     }
-    args.update(_build_arrow_assets())
+    # 延迟初始化箭头 SVG，避免在模块导入时触发文件 I/O
+    if not _ARROW_CACHE:
+        _cleanup_old_arrow_cache()
+        _ARROW_CACHE.update(_build_arrow_assets())
+    args.update(_ARROW_CACHE)
     return args
 
 
 def build_global_stylesheet() -> str:
-
     """构造覆盖所有常用 Qt 控件的全局样式表。"""
     parts = [
         _QSS_BASE,
@@ -590,7 +681,8 @@ def build_global_stylesheet() -> str:
     return "\n".join(part % args for part in parts)
 
 
-GLOBAL_STYLESHEET = build_global_stylesheet()
+# 延迟初始化：仅在 apply_theme() 调用时构建样式表，避免导入时副作用
+GLOBAL_STYLESHEET: str = ""
 
 
 def apply_theme(app: QApplication) -> None:
@@ -598,6 +690,9 @@ def apply_theme(app: QApplication) -> None:
 
     应在 ``QApplication`` 实例化之后、主窗口显示之前调用一次即可。
     """
+    global GLOBAL_STYLESHEET
+    if not GLOBAL_STYLESHEET:
+        GLOBAL_STYLESHEET = build_global_stylesheet()
     app.setFont(app_font())
     app.setStyleSheet(GLOBAL_STYLESHEET)
 

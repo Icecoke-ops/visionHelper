@@ -70,6 +70,7 @@ def collect_annotation_stats(folder: str) -> Dict[str, int]:
     if not root.is_dir():
         raise ValueError(f"目录不存在或不是文件夹: {folder}")
 
+    # 使用 stem 去重：同一张图片可能有 .jpg/.png 等多个扩展名版本，按 stem 计为一张
     total_images = len({p.stem for p in iter_images(root)})
 
     annotated_images = 0

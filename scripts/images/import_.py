@@ -35,7 +35,7 @@ __all__ = [
 
 def _format_index(index: int, width: int = 6) -> str:
     """将索引格式化为固定宽度的字符串。"""
-    return str(index).zfill(width)
+    return f"{index:0{width}d}"
 
 
 def _ensure_dir(directory: str) -> Path:
@@ -191,10 +191,15 @@ def extract_video_frames(
     try:
         if seek_mode == "seek" and frame_step > 1:
             target_index = start_frame
+            seek_failed = False
             while target_index < end_frame:
                 current = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                 if current != target_index:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, target_index)
+                    # 某些编码器不支持精确 seek，回退到 decode_all
+                    if not cap.set(cv2.CAP_PROP_POS_FRAMES, target_index):
+                        log(f"[警告] seek 模式失败（编码器不支持精确跳帧），回退到 decode_all 模式", stream=sys.stderr)
+                        seek_failed = True
+                        break
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -209,6 +214,28 @@ def extract_video_frames(
                 saved_count += 1
                 progress.update(1)
                 target_index += frame_step
+
+            if seek_failed:
+                # 重置捕获器并使用 decode_all 模式
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                frame_index = start_frame
+                while frame_index < end_frame:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+
+                    if (frame_index - start_frame) % frame_step == 0:
+                        save_path = _resolve_save_path(
+                            output_path, prefix, saved_count, ext, overwrite
+                        )
+                        ok = cv2.imwrite(str(save_path), frame, params)
+                        if not ok:
+                            raise RuntimeError(f"保存图片失败: {save_path}")
+                        saved_paths.append(str(save_path))
+                        saved_count += 1
+                        progress.update(1)
+
+                    frame_index += 1
         else:
             while frame_index < end_frame:
                 ret, frame = cap.read()
