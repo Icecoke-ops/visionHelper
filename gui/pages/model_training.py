@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QGridLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QWidget,
@@ -57,18 +58,10 @@ BASE_MODEL_FAMILIES = [
     "yolo11x",
 ]
 
-# 各任务对应的模型名后缀（与 scripts.train_model._TASK_MODEL_SUFFIX 保持一致）
-_TASK_MODEL_SUFFIX = {
-    "detect": "",
-    "obb": "-obb",
-    "segment": "-seg",
-    "classify": "-cls",
-}
-
-
 def _build_base_models(task: str) -> list:
     """根据任务类型构造基模型名列表（自动追加 ``-obb``/``-seg``/``-cls`` 后缀）。"""
-    suffix = _TASK_MODEL_SUFFIX.get(task, "")
+    from scripts.common.config import TASK_MODEL_SUFFIX
+    suffix = TASK_MODEL_SUFFIX.get(task, "")
     return [f"{name}{suffix}" for name in BASE_MODEL_FAMILIES]
 
 
@@ -141,7 +134,8 @@ class ModelTrainingPage(BaseTaskPage):
         # 第0行：基础训练参数
         self.epochs_spin = LabeledSpinBox("轮数", 1, 10000, 100, label_width=LABEL_W, spin_width=SPIN_W)
         self.imgsz_spin = LabeledSpinBox("尺寸", 32, 2048, 640, label_width=LABEL_W, spin_width=SPIN_W)
-        self.batch_spin = LabeledSpinBox("批次", 1, 256, 16, label_width=LABEL_W, spin_width=SPIN_W)
+        self.batch_spin = LabeledSpinBox("批次", -1, 256, 16, label_width=LABEL_W, spin_width=SPIN_W)
+        self.batch_spin.spin.setSpecialValueText("自动")
         params_grid.addWidget(self.epochs_spin, 0, 0)
         params_grid.addWidget(self.imgsz_spin, 0, 1)
         params_grid.addWidget(self.batch_spin, 0, 2)
@@ -187,6 +181,11 @@ class ModelTrainingPage(BaseTaskPage):
         self.sahi_enabled_check.toggled.connect(self._on_sahi_toggled)
 
         self._add_widget_row("训练参数：", params_widget)
+
+        sahi_hint = QLabel("说明：当前 SAHI 选项仅在训练结果目录保存 sahi_config.json，暂未接入切片推理流程。")
+        sahi_hint.setWordWrap(True)
+        sahi_hint.setProperty("hint", True)
+        self.content_layout.addWidget(sahi_hint)
 
         self.train_btn = SuccessButton("开始训练")
         self.train_btn.setMinimumWidth(140)

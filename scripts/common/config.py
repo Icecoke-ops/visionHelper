@@ -27,7 +27,7 @@ from typing import Dict, FrozenSet, Tuple
 # --------------------------------------------------------------------------- #
 
 #: 后端支持的图片扩展名（统一小写、带点号）。
-IMAGE_EXTENSIONS: Tuple[str, ...] = (
+IMAGE_EXTENSIONS: FrozenSet[str] = frozenset({
     ".jpg",
     ".jpeg",
     ".png",
@@ -36,7 +36,7 @@ IMAGE_EXTENSIONS: Tuple[str, ...] = (
     ".tiff",
     ".tif",
     ".gif",
-)
+})
 
 #: 支持的视觉任务类型。``detect`` / ``obb`` / ``segment`` / ``classify``。
 SUPPORTED_TASKS: FrozenSet[str] = frozenset({"detect", "obb", "segment", "classify"})

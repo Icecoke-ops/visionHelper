@@ -160,7 +160,7 @@ class ProgressLogger:
             msg = f"[{self.desc}] {self._count}"
         try:
             print(msg, file=self._stream, flush=True)
-        except Exception as exc:  # noqa: BLE001 — 任何 IO 失败都不应影响主流程
+        except (OSError, IOError, ValueError) as exc:
             sys.stderr.write(f"[ProgressLogger] 输出失败: {exc}\n")
         self._last_emit_time = time.monotonic()
 

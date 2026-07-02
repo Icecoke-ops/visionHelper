@@ -28,6 +28,7 @@ from scripts.common.config import IMAGE_EXTENSIONS, SUPPORTED_TASKS
 from scripts.common.logging import ProgressLogger, log
 from scripts.common.utils import find_model_class_names, is_image_file
 
+import cv2
 
 __all__ = ["predict", "main"]
 
@@ -43,8 +44,6 @@ def _draw_detect_results(
     if boxes is None:
         return
 
-    import cv2
-
     for cls_id, conf, xyxy in zip(
             boxes.cls.tolist(),
             boxes.conf.tolist(),
@@ -55,15 +54,12 @@ def _draw_detect_results(
         label = class_names[int(cls_id)] if class_names else str(int(cls_id))
         x1, y1, x2, y2 = map(int, xyxy)
 
-        # 绘制边框
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        # 绘制标签背景
         text = f"{label} {conf:.2f}"
         (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
         cv2.rectangle(frame, (x1, y1 - text_h - 10), (x1 + text_w, y1), (0, 255, 0), -1)
 
-        # 绘制标签文字
         cv2.putText(
             frame, text, (x1, y1 - 5),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA,
@@ -81,7 +77,6 @@ def _draw_obb_results(
     if obb is None:
         return
 
-    import cv2
     import numpy as np
 
     for cls_id, conf, points in zip(
@@ -117,7 +112,6 @@ def _draw_segment_results(
     if masks is None or getattr(masks, "xy", None) is None:
         return
 
-    import cv2
     import numpy as np
 
     cls_list = (
@@ -169,8 +163,6 @@ def _draw_classify_results(
     if probs is None or not class_names:
         return
 
-    import cv2
-
     top1 = getattr(probs, "top1", None)
     top1_conf = getattr(probs, "top1conf", None)
     if top1 is None:
@@ -193,6 +185,14 @@ def _draw_classify_results(
     )
 
 
+_DRAW_STRATEGIES = {
+    "detect": _draw_detect_results,
+    "obb": _draw_obb_results,
+    "segment": _draw_segment_results,
+    "classify": _draw_classify_results,
+}
+
+
 def _draw_results(
         frame,
         result,
@@ -201,14 +201,13 @@ def _draw_results(
         conf_threshold: float,
 ) -> None:
     """根据任务类型在图片/帧上绘制推理结果。"""
-    if task == "detect":
-        _draw_detect_results(frame, result, class_names, conf_threshold)
-    elif task == "obb":
-        _draw_obb_results(frame, result, class_names, conf_threshold)
-    elif task == "segment":
-        _draw_segment_results(frame, result, class_names, conf_threshold)
-    elif task == "classify":
-        _draw_classify_results(frame, result, class_names)
+    draw_fn = _DRAW_STRATEGIES.get(task)
+    if draw_fn is None:
+        return
+    if task == "classify":
+        draw_fn(frame, result, class_names)
+    else:
+        draw_fn(frame, result, class_names, conf_threshold)
 
 
 def predict(
@@ -219,6 +218,7 @@ def predict(
         task: str = "detect",
         device: Optional[str] = None,
         iou: float = 0.45,
+        batch_size: int = 16,
 ) -> Dict[str, object]:
     """
     使用 YOLO 模型对图片或视频进行预测，将可视化结果保存到输出目录。
@@ -231,22 +231,17 @@ def predict(
         task: 任务类型，detect / obb / segment / classify，默认 detect。
         device: 推理设备，例如 0、cpu，默认自动选择。
         iou: NMS IoU 阈值，必须位于 (0, 1]，默认 0.45。
+        batch_size: 目录预测时的批次大小，默认 16。
 
     返回:
         包含 total / success / failed 等键的字典。
 
     异常:
-        FileNotFoundError: model_path 或 input_path 不存在。
         ValueError: 参数非法。
     """
 
     model_file = Path(model_path)
-    if not model_file.is_file():
-        raise FileNotFoundError(f"模型文件不存在: {model_path}")
-
     input_p = Path(input_path)
-    if not input_p.exists():
-        raise FileNotFoundError(f"输入路径不存在: {input_path}")
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -265,8 +260,6 @@ def predict(
     except ImportError as exc:
         raise RuntimeError("未安装 ultralytics，请先执行：pip install ultralytics") from exc
 
-    import cv2
-
     yolo_model = YOLO(str(model_file))
     class_names = find_model_class_names(yolo_model)
 
@@ -278,30 +271,25 @@ def predict(
         base_kwargs["conf"] = threshold
         base_kwargs["iou"] = iou
 
-    stats = {"total": 0, "success": 0, "failed": 0, "input_type": ""}
-
     if input_p.is_file():
         ext = input_p.suffix.lower()
         video_exts = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
         if ext in video_exts:
-            stats["input_type"] = "video"
-            _predict_video(
+            stats = _predict_video(
                 yolo_model, input_p, output_path, task, class_names,
-                dict(base_kwargs), stats,
+                dict(base_kwargs),
             )
         elif ext in IMAGE_EXTENSIONS:
-            stats["input_type"] = "image"
-            _predict_single_image(
+            stats = _predict_single_image(
                 yolo_model, input_p, output_path, task, class_names,
-                dict(base_kwargs), stats,
+                dict(base_kwargs),
             )
         else:
             raise ValueError(f"不支持的文件类型: {ext}")
     elif input_p.is_dir():
-        stats["input_type"] = "images"
-        _predict_image_dir(
+        stats = _predict_image_dir(
             yolo_model, input_p, output_path, task, class_names,
-            dict(base_kwargs), stats,
+            dict(base_kwargs), batch_size=batch_size,
         )
     else:
         raise ValueError(f"输入路径不是文件或目录: {input_path}")
@@ -323,29 +311,32 @@ def _predict_single_image(
         task: str,
         class_names: List[str],
         predict_kwargs: Dict[str, object],
-        stats: Dict[str, object],
-) -> None:
+) -> Dict[str, object]:
     """预测单张图片并保存结果。"""
-    import cv2
-
+    stats: Dict[str, object] = {"total": 0, "success": 0, "failed": 0, "input_type": "image"}
     stats["total"] += 1
+    conf_threshold = predict_kwargs.get("conf", 0.25)
     try:
         frame = cv2.imread(str(image_path))
         if frame is None:
             log(f"[警告] 无法读取图片: {image_path.name}")
             stats["failed"] += 1
-            return
+            return stats
 
         results = list(yolo_model.predict(source=str(image_path), **predict_kwargs))
         if results:
-            _draw_results(frame, results[0], task, class_names, predict_kwargs.get("conf", 0.25))
+            _draw_results(frame, results[0], task, class_names, conf_threshold)
 
         output_file = output_dir / f"{image_path.stem}_pred{image_path.suffix}"
-        cv2.imwrite(str(output_file), frame)
-        stats["success"] += 1
+        if not cv2.imwrite(str(output_file), frame):
+            log(f"[错误] 无法保存图片: {output_file.name}")
+            stats["failed"] += 1
+        else:
+            stats["success"] += 1
     except Exception as exc:
         log(f"[错误] 预测失败 {image_path.name}: {exc}")
         stats["failed"] += 1
+    return stats
 
 
 def _predict_image_dir(
@@ -355,19 +346,18 @@ def _predict_image_dir(
         task: str,
         class_names: List[str],
         predict_kwargs: Dict[str, object],
-        stats: Dict[str, object],
-) -> None:
+        batch_size: int = 16,
+) -> Dict[str, object]:
     """批量预测目录中的图片（分批推理以利用 Ultralytics 内部批处理）。"""
-    import cv2
+    stats: Dict[str, object] = {"total": 0, "success": 0, "failed": 0, "input_type": "images"}
 
     images = sorted([p for p in input_dir.iterdir() if is_image_file(p)])
     if not images:
         log("未找到可预测的图片")
-        return
+        return stats
 
     stats["total"] += len(images)
     conf_threshold = predict_kwargs.get("conf", 0.25)
-    batch_size = 16
     total_batches = (len(images) + batch_size - 1) // batch_size
     progress = ProgressLogger(total=len(images), desc="图片预测")
 
@@ -391,14 +381,18 @@ def _predict_image_dir(
                 frame = result.orig_img
                 _draw_results(frame, result, task, class_names, conf_threshold)
                 output_file = output_dir / f"{image_path.stem}_pred{image_path.suffix}"
-                cv2.imwrite(str(output_file), frame)
-                stats["success"] += 1
+                if not cv2.imwrite(str(output_file), frame):
+                    log(f"[错误] 无法保存图片: {output_file.name}")
+                    stats["failed"] += 1
+                else:
+                    stats["success"] += 1
             except Exception as exc:
                 log(f"[错误] 预测失败 {image_path.name}: {exc}")
                 stats["failed"] += 1
             progress.update(1)
 
     progress.close()
+    return stats
 
 
 def _predict_video(
@@ -408,31 +402,31 @@ def _predict_video(
         task: str,
         class_names: List[str],
         predict_kwargs: Dict[str, object],
-        stats: Dict[str, object],
-) -> None:
+) -> Dict[str, object]:
     """预测视频并保存结果，带进度条显示。"""
     import time
-
-    import cv2
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"无法打开视频: {video_path}")
 
-    # 获取视频属性
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    stats["total"] = total_frames
+    stats: Dict[str, object] = {"total": total_frames, "success": 0, "failed": 0, "input_type": "video"}
 
-    # 输出视频路径
     output_video = output_dir / f"{video_path.stem}_pred{video_path.suffix}"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(output_video), fourcc, fps, (width, height))
+    codecs_to_try = ["mp4v", "avc1", "h264"]
+    writer = None
+    for codec_str in codecs_to_try:
+        fourcc = cv2.VideoWriter_fourcc(*codec_str)
+        writer = cv2.VideoWriter(str(output_video), fourcc, fps, (width, height))
+        if writer.isOpened():
+            break
 
-    if not writer.isOpened():
+    if writer is None or not writer.isOpened():
         cap.release()
         raise RuntimeError(f"无法创建输出视频: {output_video}")
 
@@ -450,22 +444,24 @@ def _predict_video(
             if not ret:
                 break
 
-            # 对当前帧进行推理
-            results = list(yolo_model.predict(source=frame, **predict_kwargs))
-            if results:
-                _draw_results(frame, results[0], task, class_names, conf_threshold)
+            try:
+                results = list(yolo_model.predict(source=frame, **predict_kwargs))
+                if results:
+                    _draw_results(frame, results[0], task, class_names, conf_threshold)
 
-            writer.write(frame)
-            stats["success"] += 1
+                writer.write(frame)
+                stats["success"] += 1
+            except Exception as exc:
+                log(f"[错误] 第 {frame_idx+1} 帧处理失败: {exc}")
+                stats["failed"] += 1
+
             frame_idx += 1
 
-            # 实时进度显示：每10帧或每0.5秒输出一次
             now = time.time()
             if frame_idx % 10 == 0 or (now - last_print_time) >= 0.5:
                 elapsed = now - start_time
                 fps_actual = frame_idx / elapsed if elapsed > 0 else 0
                 percent = frame_idx * 100.0 / total_frames if total_frames > 0 else 0
-                # 预估剩余时间
                 if fps_actual > 0:
                     remaining = (total_frames - frame_idx) / fps_actual
                     remaining_str = f"{int(remaining // 60)}:{int(remaining % 60):02d}"
@@ -479,6 +475,8 @@ def _predict_video(
 
     except KeyboardInterrupt:
         log("\n[已取消] 用户中断预测")
+        stats["failed"] = max(0, total_frames - stats["success"])
+        raise
     except Exception as exc:
         log(f"\n[错误] 视频预测失败: {exc}")
         stats["failed"] = total_frames - stats["success"]
@@ -488,6 +486,7 @@ def _predict_video(
 
     elapsed = time.time() - start_time
     log(f"视频预测完成，耗时: {elapsed:.1f}秒，结果保存在: {output_video}")
+    return stats
 
 
 def _build_parser() -> argparse.ArgumentParser:

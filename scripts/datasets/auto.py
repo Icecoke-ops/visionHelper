@@ -35,7 +35,6 @@ from scripts.common.config import (
 )
 from scripts.common.logging import ProgressLogger, log
 from scripts.common.utils import (
-    discover_trained_models,
     find_model_class_names,
     is_image_file,
 )
@@ -338,11 +337,11 @@ def auto_annotate(
     """对工作目录下的图片进行自动标注（支持批量推理 + 流式结果）。"""
     work_path = Path(work_dir)
     if not work_path.is_dir():
-        raise ValueError(f"工作目录不存在: {work_dir}")
+        raise ValueError(f"工作目录不存在: {work_dir}")  # NOTE: duplicated in _validate_args; kept for API safety
 
     model_file = Path(model_path)
     if not model_file.is_file():
-        raise ValueError(f"模型文件不存在: {model_path}")
+        raise ValueError(f"模型文件不存在: {model_path}")  # NOTE: duplicated in _validate_args; kept for API safety
 
     task = task.lower()
     if task not in SUPPORTED_TASKS:
@@ -351,13 +350,13 @@ def auto_annotate(
         )
 
     if not (0 < threshold <= 1):
-        raise ValueError("threshold 必须在 (0, 1] 范围内")
+        raise ValueError("threshold 必须在 (0, 1] 范围内")  # NOTE: duplicated in _validate_args
     if not (0 < iou <= 1):
-        raise ValueError("iou 必须在 (0, 1] 范围内")
+        raise ValueError("iou 必须在 (0, 1] 范围内")  # NOTE: duplicated in _validate_args
     if tolerance_seconds < 0:
-        raise ValueError("tolerance_seconds 必须 >= 0")
+        raise ValueError("tolerance_seconds 必须 >= 0")  # NOTE: duplicated in _validate_args
     if batch_size <= 0:
-        raise ValueError("batch_size 必须 > 0")
+        raise ValueError("batch_size 必须 > 0")  # NOTE: duplicated in _validate_args
 
     if not any([include_unannotated, include_auto, include_auto_corrected, include_manual]):
         raise ValueError("至少需要选择一种处理范围")
@@ -374,6 +373,7 @@ def auto_annotate(
     except ImportError as exc:
         raise RuntimeError("未安装 ultralytics，请先执行：pip install ultralytics") from exc
 
+    log("[安全提示] 正在加载模型文件，请确保模型来源可信")
     yolo_model = YOLO(str(model_file))
     class_names = find_model_class_names(yolo_model)
 
@@ -454,19 +454,9 @@ def auto_annotate(
                 progress.update(1)
             continue
 
-        results_list = list(results_iter)
-        if len(results_list) != len(readable_chunk):
-            log(
-                f"[警告] 批量推理返回数量与输入不匹配："
-                f"{len(results_list)} vs {len(readable_chunk)}（已尽力对齐前缀）"
-            )
-
-        for idx, (image_path, json_path, status, existing) in enumerate(readable_chunk):
-            if idx >= len(results_list):
-                skipped += 1
-                progress.update(1)
-                continue
-            result = results_list[idx]
+        processed = 0
+        for result, (image_path, json_path, status, existing) in zip(results_iter, readable_chunk):
+            processed += 1
             try:
                 wrote = _finalize_and_save(
                     task=task,
@@ -482,10 +472,23 @@ def auto_annotate(
 
             if wrote:
                 annotated += 1
-                by_type[status] = by_type.get(status, 0) + 1
+                by_type[status] += 1
             else:
                 skipped += 1
             progress.update(1)
+
+        # Consume any leftover results (needed for stream=True generator cleanup)
+        extra = sum(1 for _ in results_iter)
+        total_results = processed + extra
+
+        if total_results != len(readable_chunk):
+            log(
+                f"[警告] 批量推理返回数量与输入不匹配："
+                f"{total_results} vs {len(readable_chunk)}（已尽力对齐前缀）"
+            )
+            for _ in range(total_results, len(readable_chunk)):
+                skipped += 1
+                progress.update(1)
 
     progress.close()
 
@@ -684,11 +687,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         log(f"[错误] 自动标注失败：{exc}", stream=sys.stderr)
         return 1
 
-    if isinstance(result, dict):
-        total = result.get("total", 0)
-        annotated = result.get("annotated", 0)
-        skipped = result.get("skipped", 0)
-        log(f"[完成] 总计 {total} 张，标注 {annotated} 张，跳过 {skipped} 张。")
+    total = result.get("total", 0)
+    annotated = result.get("annotated", 0)
+    skipped = result.get("skipped", 0)
+    log(f"[完成] 总计 {total} 张，标注 {annotated} 张，跳过 {skipped} 张。")
     return 0
 
 

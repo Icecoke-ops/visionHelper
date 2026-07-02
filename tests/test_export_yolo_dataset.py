@@ -14,11 +14,13 @@ rectangle shape），验证：
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
 
-from scripts.datasets.export import export_yolo_dataset
+from scripts.common.utils import validate_split_ratios
+from scripts.datasets.export import export_yolo_dataset, main as export_main
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +58,28 @@ def _make_rect_annotation(
         "imageData": None,
         "imageHeight": img_h,
         "imageWidth": img_w,
+    }
+    json_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _make_unsupported_shape_annotation(json_path: Path, image_path: Path) -> None:
+    """构造一个 detect/obb/segment 均不会导出的 shape。"""
+    data = {
+        "version": "2.4.0",
+        "flags": {},
+        "shapes": [
+            {
+                "label": "cat",
+                "points": [[8.0, 8.0], [16.0, 16.0]],
+                "shape_type": "circle",
+            }
+        ],
+        "imagePath": image_path.name,
+        "imageData": None,
+        "imageHeight": 32,
+        "imageWidth": 32,
     }
     json_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -193,6 +217,37 @@ def test_export_copy_mode_copy_creates_real_file(tmp_path, make_image):
     assert out_img.stat().st_ino != img.stat().st_ino
 
 
+def test_export_allows_all_test_split(tmp_path, make_image):
+    """应允许 train_ratio=0.0/test_ratio=1.0，方便小数据集调试。"""
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    output_dir = tmp_path / "out"
+
+    img = make_image(input_dir / "img.jpg", size=(32, 32))
+    _make_rect_annotation(
+        input_dir / "img.json",
+        img,
+        label="cat",
+        x1=4.0,
+        y1=4.0,
+        x2=28.0,
+        y2=28.0,
+    )
+
+    counts = export_yolo_dataset(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        task="detect",
+        train_ratio=0.0,
+        test_ratio=1.0,
+        seed=0,
+        copy_mode="copy",
+    )
+
+    assert counts == {"train": 0, "test": 1}
+    assert (output_dir / "images" / "test" / "img.jpg").is_file()
+
+
 def test_export_invalid_ratios_raise(tmp_path, make_image):
     """train_ratio + test_ratio != 1 时应当抛出 ValueError。"""
     input_dir = tmp_path / "input"
@@ -218,6 +273,82 @@ def test_export_invalid_ratios_raise(tmp_path, make_image):
         )
 
 
+def test_export_zero_sum_ratios_raise(tmp_path, make_image):
+    """train_ratio/test_ratio 不能同时为 0。"""
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    img = make_image(input_dir / "img.jpg", size=(32, 32))
+    _make_rect_annotation(
+        input_dir / "img.json",
+        img,
+        label="cat",
+        x1=4.0,
+        y1=4.0,
+        x2=28.0,
+        y2=28.0,
+    )
+
+    with pytest.raises(ValueError):
+        export_yolo_dataset(
+            input_dir=str(input_dir),
+            output_dir=str(tmp_path / "out"),
+            task="detect",
+            train_ratio=0.0,
+            test_ratio=0.0,
+        )
+
+
+def test_export_cli_all_train_split_is_allowed(tmp_path, make_image):
+    """CLI 与核心函数一致，允许 1.0/0.0 划分。"""
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    output_dir = tmp_path / "out"
+    img = make_image(input_dir / "img.jpg", size=(32, 32))
+    _make_rect_annotation(
+        input_dir / "img.json",
+        img,
+        label="cat",
+        x1=4.0,
+        y1=4.0,
+        x2=28.0,
+        y2=28.0,
+    )
+
+    code = export_main([
+        "--input", str(input_dir),
+        "--output", str(output_dir),
+        "--task", "detect",
+        "--train-ratio", "1.0",
+        "--test-ratio", "0.0",
+    ])
+
+    assert code == 0
+    assert (output_dir / "images" / "train" / "img.jpg").is_file()
+
+
+def test_validate_split_ratios_rejects_invalid_values():
+    """划分比例必须为 [0, 1] 内的有限数字，且总和为 1。"""
+    invalid_cases = [
+        (-0.1, 1.1),
+        (1.1, -0.1),
+        (math.nan, 1.0),
+        (1.0, math.nan),
+        (math.inf, 0.0),
+        (0.0, -math.inf),
+        (0.5, 0.2),
+    ]
+
+    for train_ratio, test_ratio in invalid_cases:
+        with pytest.raises(ValueError):
+            validate_split_ratios(train_ratio, test_ratio)
+
+
+def test_validate_split_ratios_allows_single_split_side():
+    """允许全训练集或全测试集划分。"""
+    validate_split_ratios(1.0, 0.0)
+    validate_split_ratios(0.0, 1.0)
+
+
 def test_export_unknown_task_raises(tmp_path):
     """未支持的 task 应当抛出 ValueError。"""
     input_dir = tmp_path / "input"
@@ -230,3 +361,50 @@ def test_export_unknown_task_raises(tmp_path):
             train_ratio=1.0,
             test_ratio=0.0,
         )
+
+
+def test_export_skips_empty_labels_by_default(tmp_path, make_image):
+    """默认不导出空标签样本；仅显式 export_empty_labels=True 时才保留。"""
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    output_dir = tmp_path / "out"
+
+    img = make_image(input_dir / "img.jpg", size=(32, 32))
+    _make_unsupported_shape_annotation(input_dir / "img.json", img)
+
+    counts = export_yolo_dataset(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        task="detect",
+        train_ratio=1.0,
+        test_ratio=0.0,
+    )
+
+    assert counts == {"train": 0, "test": 0}
+    assert not (output_dir / "images" / "train" / "img.jpg").exists()
+    assert not (output_dir / "labels" / "train" / "img.txt").exists()
+
+
+def test_export_empty_labels_when_explicitly_enabled(tmp_path, make_image):
+    """export_empty_labels=True 时，空标签样本应被导出为空 txt。"""
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    output_dir = tmp_path / "out"
+
+    img = make_image(input_dir / "img.jpg", size=(32, 32))
+    _make_unsupported_shape_annotation(input_dir / "img.json", img)
+
+    counts = export_yolo_dataset(
+        input_dir=str(input_dir),
+        output_dir=str(output_dir),
+        task="detect",
+        train_ratio=1.0,
+        test_ratio=0.0,
+        export_empty_labels=True,
+    )
+
+    label_path = output_dir / "labels" / "train" / "img.txt"
+    assert counts == {"train": 1, "test": 0}
+    assert (output_dir / "images" / "train" / "img.jpg").is_file()
+    assert label_path.is_file()
+    assert label_path.read_text(encoding="utf-8") == ""

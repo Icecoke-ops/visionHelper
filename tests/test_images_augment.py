@@ -8,6 +8,9 @@ import random
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+pytest.importorskip("cv2")
 
 from scripts.images.augment import (
     apply_channel_transform,

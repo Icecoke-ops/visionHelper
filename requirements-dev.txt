@@ -1,5 +1,7 @@
 # 开发 / 测试依赖
-# 安装：pip install -r requirements-dev.txt
+# 测试会用到 Pillow / numpy / opencv / ultralytics 等运行依赖；请先安装 requirements.txt，
+# 再安装本文件中的 pytest 等开发依赖。
+# 安装：pip install -r requirements.txt && pip install -r requirements-dev.txt
 
 pytest>=7.0
 # Pillow 已经在 requirements.txt 中声明，这里不重复列出

@@ -34,6 +34,7 @@ def clear_annotations(
         include_auto_corrected: bool = False,
         include_manual: bool = False,
         tolerance_seconds: float = DEFAULT_TOLERANCE_SECONDS,
+        dry_run: bool = False,
 ) -> Dict[str, object]:
     """
     清除目录下指定类型的 X-AnyLabeling JSON 标注文件。
@@ -44,22 +45,23 @@ def clear_annotations(
         include_auto_corrected: 是否删除自动标注后人工矫正的 JSON。
         include_manual: 是否删除手动标注的 JSON。
         tolerance_seconds: 区分自动 / 矫正 的时间容差（秒）。
+        dry_run: 是否仅预演待删除文件，不实际删除。
 
     返回:
-        ``{"scanned", "deleted", "by_type", "failed"}`` 字典。
+        ``{"scanned", "deleted", "would_delete", "dry_run", "by_type", "failed"}`` 字典。
 
     异常:
         ValueError: 目录不存在、不是文件夹，或所有清除开关均为关闭时抛出。
     """
     root = Path(folder)
     if not root.is_dir():
-        raise ValueError(f"目录不存在或不是文件夹: {folder}")
+        raise ValueError(f"目录不存在或不是文件夹: {folder}")  # NOTE: duplicated in _validate_args; kept for API safety
 
     if tolerance_seconds < 0:
-        raise ValueError("tolerance_seconds 必须 >= 0")
+        raise ValueError("tolerance_seconds 必须 >= 0")  # NOTE: duplicated in _validate_args
 
     if not any([include_auto, include_auto_corrected, include_manual]):
-        raise ValueError("至少需要选择一种待清除的标注类型")
+        raise ValueError("至少需要选择一种待清除的标注类型")  # NOTE: duplicated in _validate_args
 
     include_map: Dict[AnnotationType, bool] = {
         AnnotationType.AUTO: include_auto,
@@ -71,6 +73,7 @@ def clear_annotations(
 
     scanned = 0
     deleted = 0
+    would_delete = 0
     by_type: Dict[str, int] = {
         AnnotationType.AUTO.value: 0,
         AnnotationType.AUTO_CORRECTED.value: 0,
@@ -90,6 +93,11 @@ def clear_annotations(
         if not include_map.get(ann_type, False):
             continue
 
+        if dry_run:
+            would_delete += 1
+            by_type[ann_type.value] += 1
+            continue
+
         try:
             ann_path.unlink()
         except OSError as exc:
@@ -98,11 +106,13 @@ def clear_annotations(
             continue
 
         deleted += 1
-        by_type[ann_type.value] = by_type.get(ann_type.value, 0) + 1
+        by_type[ann_type.value] += 1
 
+    action_label = "预演清除标签完成" if dry_run else "清除标签完成"
     log(
-        "清除标签完成：\n"
+        f"{action_label}：\n"
         f"  扫描到匹配图片的标注: {scanned}\n"
+        f"  预计删除: {would_delete if dry_run else deleted}\n"
         f"  实际删除: {deleted}\n"
         f"  按类型: 自动 {by_type[AnnotationType.AUTO.value]}, "
         f"矫正 {by_type[AnnotationType.AUTO_CORRECTED.value]}, "
@@ -113,6 +123,8 @@ def clear_annotations(
     return {
         "scanned": scanned,
         "deleted": deleted,
+        "would_delete": would_delete if dry_run else deleted,
+        "dry_run": dry_run,
         "by_type": by_type,
         "failed": failed,
     }
@@ -153,6 +165,11 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_TOLERANCE_SECONDS,
         help=f"判定自动 / 矫正的时间容差（秒），默认 {DEFAULT_TOLERANCE_SECONDS}",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="仅预演待删除文件，不实际删除",
     )
     return parser
 
@@ -199,6 +216,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             include_auto_corrected=args.include_auto_corrected,
             include_manual=args.include_manual,
             tolerance_seconds=args.tolerance_seconds,
+            dry_run=args.dry_run,
         )
     except KeyboardInterrupt:
         log(
@@ -216,8 +234,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if isinstance(result, dict):
         scanned = result.get("scanned", 0)
         deleted = result.get("deleted", 0)
+        would_delete = result.get("would_delete", deleted)
+        dry_run = bool(result.get("dry_run", False))
         failed = result.get("failed", []) or []
-        log(f"[完成] 扫描 {scanned} 个 JSON，删除 {deleted} 个。")
+        if dry_run:
+            log(f"[完成] 预演扫描 {scanned} 个 JSON，预计删除 {would_delete} 个，未实际删除。")
+        else:
+            log(f"[完成] 扫描 {scanned} 个 JSON，删除 {deleted} 个。")
         if failed:
             log(f"[警告] {len(failed)} 个文件删除失败，请检查权限或被占用。",
                 stream=sys.stderr)

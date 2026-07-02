@@ -21,10 +21,13 @@
 """
 
 import json
+import sys
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Union
+
+from scripts.common.logging import log
 
 
 class AnnotationType(Enum):
@@ -111,7 +114,11 @@ class AnnotationTypeChecker:
 
         auto_time = self._parse_time(auto_time_value)
         if auto_time is None or json_mtime is None:
-            # 时间字段格式异常或缺少文件修改时间，保守认为是自动标注
+            log(
+                f"[AnnotationTypeChecker] auto_time={auto_time!r}, json_mtime={json_mtime!r} — "
+                f"解析失败，保守视为 AUTO",
+                stream=sys.stderr,
+            )
             return AnnotationType.AUTO
 
         if isinstance(json_mtime, (int, float)):

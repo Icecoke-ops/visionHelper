@@ -11,9 +11,9 @@
 项目由两个互不依赖的子包构成：
 
 - **`scripts/`** — 核心工具包，纯 CLI/编程接口，`import scripts` **零副作用**。重型依赖（torch/ultralytics/cv2）均在方法体内懒加载。
-- **`gui/`** — 基于 PyQt5 的桌面图形界面，通过子进程调用 `python scripts/vh.py` 执行任务，不直接 import 深度学习栈。
+- **`gui/`** — 基于 PyQt5 的桌面图形界面，通过子进程调用 `python -m scripts.vh` 执行任务，不直接 import 深度学习栈。
 
-> 设计约束：`scripts` 不依赖 `gui`；`gui` 不 `import scripts.api`。
+> 设计约束：`scripts` 不依赖 `gui`；`gui` 不 `import scripts.api`，也不直接 import `torch` / `ultralytics` / `cv2` 等重型依赖。GUI 可按需 import `scripts.common.*` 轻量工具模块。
 
 ---
 
@@ -32,6 +32,8 @@
 | 模型预测 | `vh.py predict run` | `scripts/predict/predict.py` |
 
 支持 4 种 YOLO 任务：`detect` / `obb` / `segment` / `classify`。
+
+> 说明：当前数据增强仅生成增强后的图片，不会同步变换 X-AnyLabeling JSON 标注；检测/OBB/分割任务使用增强图前需重新标注或自动标注。SAHI 相关训练参数当前仅保存 `sahi_config.json`，暂未接入预测切片推理。`deploy export` 为预留命令，尚未实现。
 
 ---
 
@@ -64,8 +66,8 @@ python scripts/vh.py datasets auto --input images/ --model best.pt --task detect
 # 标注统计
 python scripts/vh.py datasets stats --input images/
 
-# 标注清除（默认拒绝执行，需显式指定类型）
-python scripts/vh.py datasets clear --input images/ --include-auto
+# 标注清除（默认拒绝执行，需显式指定类型；可先 --dry-run 预演）
+python scripts/vh.py datasets clear --input images/ --include-auto --dry-run
 
 # 导出 YOLO 数据集
 python scripts/vh.py datasets export --input images/ --output .dataset --task detect
@@ -128,8 +130,7 @@ visionHelper/
 ├── build.bat / build.sh / build-macos.sh  # 三平台打包脚本
 │
 ├── scripts/                          # ★ 核心工具包
-│   ├── vh.py                         # 统一 CLI 入口
-│   ├── cli.py                        # 命令行路由
+│   ├── vh.py                         # 统一 CLI 入口与命令行路由
 │   ├── api.py                        # 对外编程接口
 │   │
 │   ├── common/                       # 公共基础模块
@@ -187,9 +188,11 @@ visionHelper/
     ├── conftest.py
     ├── test_annotation_type.py
     ├── test_auto_annotate.py
+    ├── test_clear_annotations.py
     ├── test_common_iters.py
     ├── test_deduplicate_phash.py
     ├── test_export_yolo_dataset.py
+    ├── test_gui_proc.py
     └── test_images_augment.py
 ```
 
@@ -212,15 +215,16 @@ pip install -r requirements-gui.txt pyinstaller
 
 ## 开发约定
 
-- 业务逻辑放在 `scripts/<subpackage>/<feature>.py` 中；`scripts/cli.py` 仅做路由。
+- 业务逻辑放在 `scripts/<subpackage>/<feature>.py` 中；`scripts/vh.py` 仅做统一入口与路由。
 - 每个功能通过 `scripts/api.py` 中的 API 类方法对外暴露，方法体内懒加载重型依赖。
 - `scripts/` 各 `__init__.py` 必须保持零副作用，禁止 import 重型子模块。
-- `gui/` 通过子进程调用 `scripts/vh.py` 执行任务，耗时操作不阻塞 UI。
+- `gui/` 通过子进程调用 `python -m scripts.vh` 执行任务，耗时操作不阻塞 UI。
 - 数据集标注格式基于 X-AnyLabeling JSON（兼容 LabelMe）。
 
 ### 测试
 
 ```bash
+pip install -r requirements.txt
 pip install -r requirements-dev.txt
 pytest
 ```

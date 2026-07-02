@@ -26,6 +26,7 @@ from scripts.common.utils import iter_images, iter_matched_pairs
 
 
 __all__ = [
+    "collect_all_stats",
     "collect_annotation_stats",
     "collect_annotation_label_stats",
     "emit_machine_block",
@@ -170,6 +171,101 @@ def collect_annotation_label_stats(folder: str) -> List[Dict[str, int]]:
     ]
 
 
+def collect_all_stats(input_dir: str):
+    """
+    单次遍历同时返回整体统计与按标签统计。
+
+    相对于分别调用 :func:`collect_annotation_stats` 和
+    :func:`collect_annotation_label_stats`，本函数只需遍历一次文件，
+    避免重复 I/O。
+
+    参数:
+        input_dir: 待统计的目录路径。
+
+    返回:
+        ``(stats, label_stats)`` 元组，含义同上述两个函数。
+    """
+    root = Path(input_dir)
+    if not root.is_dir():
+        raise ValueError(f"目录不存在或不是文件夹: {input_dir}")
+
+    total_images = len({p.stem for p in iter_images(root)})
+
+    annotated_images = 0
+    detection_images = 0
+    obb_images = 0
+    polygon_images = 0
+    manual_images = 0
+    auto_images = 0
+    auto_corrected_images = 0
+
+    type_checker = AnnotationTypeChecker()
+
+    label_counts: Dict[str, Dict[str, int]] = defaultdict(
+        lambda: {"detection_count": 0, "obb_count": 0, "polygon_count": 0}
+    )
+
+    for _image_path, ann_path, data in iter_matched_pairs(root, require_shapes=True):
+        annotated_images += 1
+        shapes = data.get("shapes", [])
+        shape_types = _detect_shape_types(shapes)
+
+        if "rectangle" in shape_types:
+            detection_images += 1
+        if "rotation" in shape_types:
+            obb_images += 1
+        if "polygon" in shape_types:
+            polygon_images += 1
+
+        try:
+            json_mtime = ann_path.stat().st_mtime
+        except OSError:
+            json_mtime = 0.0
+        ann_type = type_checker.check(data, json_mtime=json_mtime)
+        if ann_type == AnnotationType.MANUAL:
+            manual_images += 1
+        elif ann_type == AnnotationType.AUTO:
+            auto_images += 1
+        elif ann_type == AnnotationType.AUTO_CORRECTED:
+            auto_corrected_images += 1
+
+        for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            label = shape.get("label")
+            shape_type = shape.get("shape_type")
+            if not isinstance(label, str) or not isinstance(shape_type, str):
+                continue
+            counts = label_counts[label]
+            if shape_type == "rectangle":
+                counts["detection_count"] += 1
+            elif shape_type == "rotation":
+                counts["obb_count"] += 1
+            elif shape_type == "polygon":
+                counts["polygon_count"] += 1
+
+    unannotated_images = total_images - annotated_images
+
+    stats = {
+        "total_images": total_images,
+        "annotated_images": annotated_images,
+        "unannotated_images": unannotated_images,
+        "detection_images": detection_images,
+        "obb_images": obb_images,
+        "polygon_images": polygon_images,
+        "manual_images": manual_images,
+        "auto_images": auto_images,
+        "auto_corrected_images": auto_corrected_images,
+    }
+
+    label_stats = [
+        {"label": label, **counts}
+        for label, counts in sorted(label_counts.items(), key=lambda item: item[0])
+    ]
+
+    return stats, label_stats
+
+
 # --------------------------------------------------------------------------- #
 # CLI 输出协议
 # --------------------------------------------------------------------------- #
@@ -228,7 +324,7 @@ def parse_machine_block(output: str) -> Dict[str, object]:
     if not isinstance(output, str):
         raise ValueError("output 必须为字符串")
 
-    begin = output.rfind(STATS_RESULT_BEGIN_MARKER)
+    begin = output.rfind(STATS_RESULT_BEGIN_MARKER)  # rfind 取最后一个块，避免之前的 log 输出干扰
     if begin < 0:
         raise ValueError(f"未找到结果起始标记 {STATS_RESULT_BEGIN_MARKER}")
     end = output.find(STATS_RESULT_END_MARKER, begin + len(STATS_RESULT_BEGIN_MARKER))
@@ -307,7 +403,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        stats = collect_annotation_stats(args.input)
+        if args.label_stats:
+            stats, label_stats = collect_all_stats(args.input)
+        else:
+            stats = collect_annotation_stats(args.input)
+            label_stats = []
     except ValueError as exc:
         log(f"[错误] {exc}", stream=sys.stderr)
         return 2
@@ -315,22 +415,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         log("[已取消] 用户中断。", stream=sys.stderr)
         return 130
     except Exception as exc:  # noqa: BLE001
-        log(f"[错误] 整体统计失败: {exc}", stream=sys.stderr)
+        log(f"[错误] 统计失败: {exc}", stream=sys.stderr)
         return 1
-
-    label_stats: List[Dict[str, int]] = []
-    if args.label_stats:
-        try:
-            label_stats = collect_annotation_label_stats(args.input)
-        except ValueError as exc:
-            log(f"[错误] {exc}", stream=sys.stderr)
-            return 2
-        except KeyboardInterrupt:
-            log("[已取消] 用户中断。", stream=sys.stderr)
-            return 130
-        except Exception as exc:  # noqa: BLE001
-            log(f"[错误] 标签统计失败: {exc}", stream=sys.stderr)
-            return 1
 
     if not args.json_only:
         print_stats_human(stats)

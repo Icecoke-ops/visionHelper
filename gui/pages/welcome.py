@@ -35,7 +35,7 @@ from PyQt5.QtWidgets import (
 
 from gui import theme
 from gui.settings import MAX_RECENT_WORK_DIRS
-from gui.components.widgets import IconButton, LinkButton, MutedLabel, PrimaryButton
+from gui.components.widgets import IconButton, LinkButton, PrimaryButton
 
 __all__ = ["WelcomePage"]
 

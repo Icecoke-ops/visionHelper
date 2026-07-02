@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -73,8 +74,10 @@ def _make_yolo_result(
 
 
 @pytest.fixture
-def patch_yolo():
+def patch_yolo(monkeypatch):
     """提供一个 mock ``ultralytics.YOLO`` 的上下文管理器。"""
+    fake_module = SimpleNamespace(YOLO=None)
+    monkeypatch.setitem(sys.modules, "ultralytics", fake_module)
     return mock.patch("ultralytics.YOLO")
 
 

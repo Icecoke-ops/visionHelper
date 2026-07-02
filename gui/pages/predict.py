@@ -18,7 +18,6 @@ from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QFileDialog,
     QHBoxLayout,
     QMessageBox,
     QWidget,
@@ -27,6 +26,7 @@ from PyQt5.QtWidgets import (
 from gui import theme
 from gui.config import PREDICT_FOLDER
 from gui.pages.base import BaseTaskPage
+from gui.utils._proc import build_script_argv
 from gui.components.widgets import (
     FormRow,
     HSeparator,
@@ -133,22 +133,16 @@ class PredictPage(BaseTaskPage):
         # 输出目录自动设置为工作目录下的 predict 目录
         output_path = str(work_dir / PREDICT_FOLDER)
 
-        arguments = [
-            str(self._scripts_dir() / "vh.py"),
+        arguments = build_script_argv(
             "predict", "run",
-            "--model", str(model_path),
-            "--input", input_path,
-            "--output", output_path,
-            "--threshold", f"{self.threshold_spin.value():.4f}",
-            "--task", self.task_combo.currentData(),
-            "--iou", f"{self.iou_spin.value():.4f}",
-        ]
+            model=model_path,
+            input=input_path,
+            output=output_path,
+            threshold=f"{self.threshold_spin.value():.4f}",
+            task=self.task_combo.currentData(),
+            iou=f"{self.iou_spin.value():.4f}",
+        )
         self._start_subprocess(arguments, title="模型预测")
-
-    def _scripts_dir(self):
-        """获取 scripts 目录路径。"""
-        from gui.config import scripts_dir
-        return scripts_dir()
 
     def on_page_shown(self):
         """页面首次显示时刷新模型列表。"""

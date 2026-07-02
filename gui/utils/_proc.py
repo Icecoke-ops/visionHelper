@@ -28,16 +28,17 @@ GUI 子进程参数构造工具。
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 from typing import Any, Iterable, List
 
 
 def _to_cli_value(value: Any) -> str:
     """将任意 Python 值转换为 CLI 参数字符串。"""
+    if isinstance(value, bool):
+        msg = f"bool 应由 build_script_argv 在调用 _to_cli_value 前处理，收到 {value!r}"
+        raise TypeError(msg)
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, bool):
-        # bool 由调用方判断是否追加 flag，这里不应进入
-        return "true" if value else "false"
     return str(value)
 
 
@@ -147,5 +148,5 @@ def infer_script_name(arguments: Iterable[Any]) -> str:
 
 
 def join_for_display(argv: Iterable[str]) -> str:
-    """把 argv 拼成可读的命令行字符串，方便日志展示。"""
-    return " ".join(argv)
+    """把 argv 拼成可读且可复制的命令行字符串，方便日志展示。"""
+    return shlex.join(str(item) for item in argv)

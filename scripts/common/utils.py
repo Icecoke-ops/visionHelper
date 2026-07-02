@@ -13,8 +13,9 @@
 """
 
 import json
+import math
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Protocol, Tuple
 
 from scripts.common.config import IMAGE_EXTENSIONS  # re-export，保持外部 import 兼容
 from scripts.common.logging import ProgressLogger  # re-export，保持外部 import 兼容
@@ -33,10 +34,38 @@ __all__ = [
     "load_annotation",
     "resolve_image_path",
     "resolve_image_stem",
+    "validate_split_ratios",
 ]
 
 
-def find_model_class_names(model) -> list:
+def validate_split_ratios(train_ratio: float, test_ratio: float) -> None:
+    """校验训练/测试集划分比例之和约等于 1，允许 1/0 或 0/1。
+
+    参数:
+        train_ratio: 训练集占比，必须为 ``[0, 1]`` 内的有限数字。
+        test_ratio: 测试集占比，必须为 ``[0, 1]`` 内的有限数字。
+
+    异常:
+        ValueError: 任一比例不是有限数字、不在 ``[0, 1]`` 内，或总和偏离 1 超过 1e-6。
+    """
+    ratios = [("train_ratio", train_ratio), ("test_ratio", test_ratio)]
+    for name, ratio in ratios:
+        if not isinstance(ratio, (int, float)) or not math.isfinite(ratio):
+            raise ValueError(f"{name} 必须为有限数字，当前为 {ratio!r}")
+        if not 0.0 <= ratio <= 1.0:
+            raise ValueError(f"{name} 必须在 [0, 1] 范围内，当前为 {ratio}")
+
+    ratio_sum = train_ratio + test_ratio
+    if abs(ratio_sum - 1.0) > 1e-6:
+        raise ValueError(f"划分比例之和必须等于 1，当前为 {ratio_sum}")
+
+
+class _YOLOModel(Protocol):
+    """Ultralytics YOLO 模型的轻量 Protocol，避免导入 torch/ultralytics。"""
+    names: dict[int, str] | list[str] | tuple[str, ...]
+
+
+def find_model_class_names(model: _YOLOModel) -> list:
     """从 Ultralytics YOLO 模型中提取类别名称列表。"""
     names = getattr(model, "names", None)
     if isinstance(names, dict):
@@ -92,9 +121,8 @@ def resolve_image_path(annotation_path: Path, data: dict) -> Optional[Path]:
         if candidate.is_file() and is_image_file(candidate):
             return candidate
 
-    for ext in IMAGE_EXTENSIONS:
-        candidate = root / f"{annotation_path.stem}{ext}"
-        if candidate.is_file():
+    for candidate in root.glob(f"{annotation_path.stem}.*"):
+        if candidate.suffix.lower() in IMAGE_EXTENSIONS and candidate.is_file():
             return candidate
     return None
 
@@ -120,6 +148,7 @@ def iter_annotations(folder: Path) -> Iterator[Path]:
 def iter_matched_pairs(
         folder: Path,
         require_shapes: bool = False,
+        sort_results: bool = True,
 ) -> Iterator[Tuple[Path, Path, dict]]:
     """
     遍历目录下与图片相匹配的 ``(image_path, annotation_path, data)`` 三元组。
@@ -133,20 +162,39 @@ def iter_matched_pairs(
     参数:
         folder: 待扫描的目录。
         require_shapes: 是否要求 ``shapes`` 非空（默认 ``False``）。
+        sort_results: 是否按文件名排序后产出（默认 ``True``）。
+            设为 ``False`` 可节省内存（不必一次性收集所有匹配对），
+            但产出顺序为文件系统遍历的原始顺序。
 
-    产出顺序按图片文件名升序。
+    产出顺序按图片文件名升序（``sort_results=True`` 时）。
     """
     if not folder.is_dir():
         return
 
-    # 先收集所有候选标注，按名称排序保证稳定性
     annotations = sorted(
         (p for p in folder.iterdir() if is_annotation_file(p)),
         key=lambda p: p.name,
     )
 
-    pairs: List[Tuple[Path, Path, dict]] = []
     seen_stems: set = set()
+
+    if not sort_results:
+        for ann_path in annotations:
+            data = load_annotation(ann_path)
+            if data is None:
+                continue
+            if require_shapes and not data.get("shapes"):
+                continue
+            image_path = resolve_image_path(ann_path, data)
+            if image_path is None:
+                continue
+            if image_path.stem in seen_stems:
+                continue
+            seen_stems.add(image_path.stem)
+            yield (image_path, ann_path, data)
+        return
+
+    pairs: List[Tuple[Path, Path, dict]] = []
     for ann_path in annotations:
         data = load_annotation(ann_path)
         if data is None:

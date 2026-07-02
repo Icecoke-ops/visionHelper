@@ -85,18 +85,18 @@ def _time_to_seconds(time_value) -> Optional[float]:
     )
 
 
-def _get_writer_params(ext: str, quality: int) -> Tuple:
+def _get_writer_params(ext: str, quality: int) -> tuple:
     """根据扩展名返回 cv2.imwrite 所需的参数列表。"""
     import cv2
 
     if ext in {".jpg", ".jpeg"}:
-        return (cv2.IMWRITE_JPEG_QUALITY, quality), False
+        return (cv2.IMWRITE_JPEG_QUALITY, quality)
     if ext == ".png":
         compression = max(0, min(9, 9 - quality // 11))
-        return (cv2.IMWRITE_PNG_COMPRESSION, compression), True
+        return (cv2.IMWRITE_PNG_COMPRESSION, compression)
     if ext == ".webp":
-        return (cv2.IMWRITE_WEBP_QUALITY, quality), False
-    return tuple(), False
+        return (cv2.IMWRITE_WEBP_QUALITY, quality)
+    return ()
 
 
 def _resolve_save_path(
@@ -113,11 +113,14 @@ def _resolve_save_path(
         return candidate
 
     suffix_idx = 1
-    while True:
+    while suffix_idx <= 9999:
         candidate = output_path / f"{base_name}_{suffix_idx}{ext}"
         if not candidate.exists():
             return candidate
         suffix_idx += 1
+    raise RuntimeError(
+        f"无法生成唯一文件名，已达最大重试次数 9999: {base_name}"
+    )
 
 
 def extract_video_frames(
@@ -180,7 +183,7 @@ def extract_video_frames(
             cap.release()
             raise ValueError(f"end_time {end_sec}s 必须大于 start_time")
 
-    params, _ = _get_writer_params(ext, quality)
+    params = _get_writer_params(ext, quality)
     saved_paths: List[str] = []
     frame_index = start_frame
     saved_count = 0

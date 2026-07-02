@@ -23,10 +23,31 @@ from __future__ import annotations
 import argparse
 import random
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
 from scripts.common.logging import ProgressLogger, log
+from scripts.common.utils import is_image_file
+
+
+@dataclass
+class AugmentConfig:
+    rotate_enabled: bool = True
+    rotate_degrees: float = 30
+    rotate_prob: float = 0.5
+    cut_enabled: bool = True
+    cut_scale: float = 0.3
+    cut_ratio: float = 1.5
+    cut_prob: float = 0.5
+    cut_resize: bool = True
+    occlusion_enabled: bool = True
+    occlusion_count: int = 3
+    occlusion_size: float = 0.15
+    occlusion_prob: float = 0.5
+    channel_enabled: bool = True
+    channel_prob: float = 0.5
+    seed: Optional[int] = None
 
 
 def apply_random_rotation(
@@ -167,7 +188,7 @@ def apply_random_occlusion(
 
 
 def apply_channel_transform(img, p: float = 1.0, rng: Optional[random.Random] = None):
-    """通道变换：以概率 ``p`` 随机打乱 RGB 三通道或转为灰度。
+    """通道变换：以概率 ``p`` 随机打乱 BGR 三通道或转为灰度。
 
     变换方式随机选择：
         - BGR 通道打乱
@@ -194,8 +215,7 @@ def apply_channel_transform(img, p: float = 1.0, rng: Optional[random.Random] = 
 
     if mode == "permute":
         perm = list(range(3))
-        while perm == [0, 1, 2]:
-            _rng.shuffle(perm)
+        _rng.shuffle(perm)
         return img[:, :, perm]
 
     if mode == "single":
@@ -217,67 +237,39 @@ def apply_channel_transform(img, p: float = 1.0, rng: Optional[random.Random] = 
 
 def augment_image(
     img,
-    rotate_enabled: bool = True,
-    rotate_degrees: float = 30,
-    rotate_prob: float = 0.5,
-    cut_enabled: bool = True,
-    cut_scale: float = 0.3,
-    cut_ratio: float = 1.5,
-    cut_prob: float = 0.5,
-    cut_resize: bool = True,
-    occlusion_enabled: bool = True,
-    occlusion_count: int = 3,
-    occlusion_size: float = 0.15,
-    occlusion_prob: float = 0.5,
-    channel_enabled: bool = True,
-    channel_prob: float = 0.5,
-    seed: Optional[int] = None,
+    config: AugmentConfig,
     rng: Optional[random.Random] = None,
 ):
     """对单张图片按顺序(切割→遮挡→通道→旋转)应用数据增强。
 
-    每个功能可通过 ``*_enabled`` 独立启停。
+    每个功能可通过 ``AugmentConfig.*_enabled`` 独立启停。
 
     Args:
         img: OpenCV 图片数组 (H, W, C) BGR 格式。
-        rotate_enabled: 是否启用随机旋转。
-        rotate_degrees: 最大旋转角度。
-        rotate_prob: 旋转应用概率。
-        cut_enabled: 是否启用随机切割。
-        cut_scale: 裁剪面积缩放因子。
-        cut_ratio: 裁剪宽高比范围。
-        cut_prob: 切割应用概率。
-        cut_resize: 切割后是否缩放回原始尺寸。
-        occlusion_enabled: 是否启用随机遮挡。
-        occlusion_count: 遮挡块数量。
-        occlusion_size: 遮挡块尺寸比例。
-        occlusion_prob: 遮挡应用概率。
-        channel_enabled: 是否启用通道变换。
-        channel_prob: 通道变换应用概率。
-        seed: 随机种子。
-        rng: 随机数生成器；优先级高于 seed。
+        config: 增强配置，包含所有增强参数。
+        rng: 随机数生成器。
 
     Returns:
         增强后的图片。
     """
     if rng is None:
-        rng = random.Random(seed)
+        rng = random.Random(config.seed)
 
     result = img.copy()
 
-    if cut_enabled:
-        result = apply_random_cut(result, cut_scale, cut_ratio, cut_prob, cut_resize, rng)
+    if config.cut_enabled:
+        result = apply_random_cut(result, config.cut_scale, config.cut_ratio, config.cut_prob, config.cut_resize, rng)
 
-    if occlusion_enabled:
+    if config.occlusion_enabled:
         result = apply_random_occlusion(
-            result, occlusion_count, occlusion_size, occlusion_prob, rng
+            result, config.occlusion_count, config.occlusion_size, config.occlusion_prob, rng
         )
 
-    if channel_enabled:
-        result = apply_channel_transform(result, channel_prob, rng)
+    if config.channel_enabled:
+        result = apply_channel_transform(result, config.channel_prob, rng)
 
-    if rotate_enabled:
-        result = apply_random_rotation(result, rotate_degrees, rotate_prob, rng)
+    if config.rotate_enabled:
+        result = apply_random_rotation(result, config.rotate_degrees, config.rotate_prob, rng)
 
     return result
 
@@ -290,21 +282,7 @@ def augment_image(
 def augment_images(
     input_dir: str,
     output_dir: str,
-    rotate_enabled: bool = True,
-    rotate_degrees: float = 30,
-    rotate_prob: float = 0.5,
-    cut_enabled: bool = True,
-    cut_scale: float = 0.3,
-    cut_ratio: float = 1.5,
-    cut_prob: float = 0.5,
-    cut_resize: bool = True,
-    occlusion_enabled: bool = True,
-    occlusion_count: int = 3,
-    occlusion_size: float = 0.15,
-    occlusion_prob: float = 0.5,
-    channel_enabled: bool = True,
-    channel_prob: float = 0.5,
-    seed: Optional[int] = None,
+    config: AugmentConfig,
     ext: str = "jpg",
     quality: int = 95,
     prefix: str = "aug",
@@ -314,21 +292,7 @@ def augment_images(
     Args:
         input_dir: 输入图片目录。
         output_dir: 输出目录（不存在则自动创建）。
-        rotate_enabled: 是否启用随机旋转。
-        rotate_degrees: 最大旋转角度。
-        rotate_prob: 旋转应用概率。
-        cut_enabled: 是否启用随机切割。
-        cut_scale: 裁剪面积缩放因子。
-        cut_ratio: 裁剪宽高比范围。
-        cut_prob: 切割应用概率。
-        cut_resize: 切割后是否缩放回原始尺寸。
-        occlusion_enabled: 是否启用随机遮挡。
-        occlusion_count: 遮挡块数量。
-        occlusion_size: 遮挡块尺寸比例。
-        occlusion_prob: 遮挡应用概率。
-        channel_enabled: 是否启用通道变换。
-        channel_prob: 通道变换应用概率。
-        seed: 随机种子。
+        config: 增强配置。
         ext: 输出图片格式（jpg/png/webp）。
         quality: 输出图片质量 1-100。
         prefix: 输出文件名前缀，默认 ``"aug"``，最终文件名为 ``{prefix}_{原文件名}.{ext}``。
@@ -337,8 +301,6 @@ def augment_images(
         保存的图片路径列表。
     """
     import cv2
-
-    from scripts.common.utils import is_image_file
 
     input_path = Path(input_dir)
     if not input_path.is_dir():
@@ -361,7 +323,7 @@ def augment_images(
         return []
 
     saved: List[str] = []
-    rng = random.Random(seed)
+    rng = random.Random(config.seed)
     progress = ProgressLogger(total=len(image_files), desc="数据增强")
 
     for img_path in image_files:
@@ -373,20 +335,7 @@ def augment_images(
 
         aug = augment_image(
             img,
-            rotate_enabled=rotate_enabled,
-            rotate_degrees=rotate_degrees,
-            rotate_prob=rotate_prob,
-            cut_enabled=cut_enabled,
-            cut_scale=cut_scale,
-            cut_ratio=cut_ratio,
-            cut_prob=cut_prob,
-            cut_resize=cut_resize,
-            occlusion_enabled=occlusion_enabled,
-            occlusion_count=occlusion_count,
-            occlusion_size=occlusion_size,
-            occlusion_prob=occlusion_prob,
-            channel_enabled=channel_enabled,
-            channel_prob=channel_prob,
+            config,
             rng=rng,
         )
 
@@ -493,15 +442,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _normalize_args(args: argparse.Namespace) -> dict:
-    """将 CLI args 标准化为关键字参数字典。"""
-    return dict(
-        input_dir=args.input,
-        output_dir=args.output,
-        ext=args.ext,
-        quality=args.quality,
-        seed=args.seed,
-        prefix=args.prefix,
+def _normalize_args(args: argparse.Namespace) -> AugmentConfig:
+    """将 CLI args 标准化为 AugmentConfig。"""
+    return AugmentConfig(
         rotate_enabled=args.rotate_enabled,
         rotate_degrees=args.rotate_degrees,
         rotate_prob=args.rotate_prob,
@@ -516,6 +459,7 @@ def _normalize_args(args: argparse.Namespace) -> dict:
         occlusion_prob=args.occlusion_prob,
         channel_enabled=args.channel_enabled,
         channel_prob=args.channel_prob,
+        seed=args.seed,
     )
 
 
@@ -579,10 +523,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         log(f"[参数错误] {exc}", stream=sys.stderr)
         return 2
 
-    kwargs = _normalize_args(args)
+    config = _normalize_args(args)
 
     try:
-        saved = augment_images(**kwargs)
+        saved = augment_images(
+            input_dir=args.input,
+            output_dir=args.output,
+            config=config,
+            ext=args.ext,
+            quality=args.quality,
+            prefix=args.prefix,
+        )
     except (ValueError, FileNotFoundError) as exc:
         log(f"[错误] {exc}", stream=sys.stderr)
         return 2

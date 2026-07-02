@@ -12,4 +12,28 @@
 重型依赖；这些依赖仅在具体函数被调用时按需加载。
 """
 
-__all__: list[str] = []
+from scripts.datasets.auto import auto_annotate
+from scripts.datasets.clear import clear_annotations
+from scripts.datasets.export import export_yolo_dataset
+from scripts.datasets.stats import (
+    collect_all_stats,
+    collect_annotation_label_stats,
+    collect_annotation_stats,
+    emit_machine_block,
+    parse_machine_block,
+    print_label_stats_human,
+    print_stats_human,
+)
+
+__all__ = [
+    "auto_annotate",
+    "clear_annotations",
+    "export_yolo_dataset",
+    "collect_all_stats",
+    "collect_annotation_label_stats",
+    "collect_annotation_stats",
+    "emit_machine_block",
+    "parse_machine_block",
+    "print_label_stats_human",
+    "print_stats_human",
+]

@@ -230,8 +230,10 @@ class DataAnnotationPage(BaseTaskPage, AutoAnnotateMixin):
 
         self.clear_auto_cb = QCheckBox("自动标注")
         self.clear_auto_corrected_cb = QCheckBox("自动标注且修正")
+        self.clear_dry_run_cb = QCheckBox("预演模式（不删除）")
         clear_scope_layout.addWidget(self.clear_auto_cb)
         clear_scope_layout.addWidget(self.clear_auto_corrected_cb)
+        clear_scope_layout.addWidget(self.clear_dry_run_cb)
 
         clear_scope_layout.addSpacing(theme.SPACING_MD)
         self.clear_btn = DangerButton("清除标签")
@@ -339,6 +341,7 @@ class DataAnnotationPage(BaseTaskPage, AutoAnnotateMixin):
 
         include_auto = self.clear_auto_cb.isChecked()
         include_auto_corrected = self.clear_auto_corrected_cb.isChecked()
+        dry_run = self.clear_dry_run_cb.isChecked()
         if not (include_auto or include_auto_corrected):
             QMessageBox.warning(self, "参数缺失", "请至少勾选一种待清除的标注类型")
             return
@@ -350,22 +353,27 @@ class DataAnnotationPage(BaseTaskPage, AutoAnnotateMixin):
             scope_desc_parts.append("自动标注且修正")
         scope_desc = "、".join(scope_desc_parts)
 
-        confirm = QMessageBox.question(
-            self,
-            "确认清除标签",
-            (
+        if dry_run:
+            confirm_text = (
+                f"将预演扫描目录\n  {folder}\n"
+                f"中类型为【{scope_desc}】的 X-AnyLabeling JSON 标注文件，"
+                "不会实际删除。是否继续？"
+            )
+        else:
+            confirm_text = (
                 f"将从目录\n  {folder}\n"
                 f"中删除类型为【{scope_desc}】的 X-AnyLabeling JSON 标注文件，"
                 "该操作不可恢复，是否继续？"
-            ),
+            )
+
+        confirm = QMessageBox.question(
+            self,
+            "确认清除标签" if not dry_run else "确认预演清除",
+            confirm_text,
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:
-            return
-
-        if not self._python_env():
-            self._warn_no_python_env()
             return
 
         arguments = build_script_argv(
@@ -374,5 +382,6 @@ class DataAnnotationPage(BaseTaskPage, AutoAnnotateMixin):
             include_auto=include_auto,
             include_auto_corrected=include_auto_corrected,
             include_manual=False,
+            dry_run=dry_run,
         )
         self._start_subprocess(arguments, title="清除标签")

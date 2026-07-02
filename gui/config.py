@@ -22,6 +22,9 @@ from pathlib import Path
 # 图片文件夹名称：视频抽帧、图片去重等默认输出的图片目录
 IMAGES_FOLDER = "images"
 
+# 图片增强输出文件夹名称：默认与原始 images 分离，避免污染已标注数据
+AUGMENT_FOLDER = "images_aug"
+
 # 数据集文件夹名称：YOLO 数据集导出目录
 DATASET_FOLDER = "dataset"
 

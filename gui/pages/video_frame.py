@@ -19,7 +19,8 @@
     第三张卡片：数据增强
         通过子进程调用 ``python scripts/vh.py images augment --input <dir>
         --output <dir>`` 对 ``IMAGES_FOLDER`` 下图片进行随机旋转、切割、
-        遮挡、通道变换等增强，结果输出到 ``IMAGES_FOLDER`` 下。
+        遮挡、通道变换等增强，结果默认输出到 ``AUGMENT_FOLDER`` 下；当前
+        不会同步变换 X-AnyLabeling JSON 标注。
 
 所有按钮 / 间距 / 颜色统一来自 :mod:`gui.theme` 与 :mod:`gui.components.widgets`。
 """
@@ -42,7 +43,7 @@ from PyQt5.QtWidgets import (
 from gui import theme
 from gui.utils._proc import build_script_argv
 from gui.pages.base import BaseTaskPage
-from gui.config import IMAGES_FOLDER, RECYCLE_BIN_FOLDER
+from gui.config import AUGMENT_FOLDER, IMAGES_FOLDER, RECYCLE_BIN_FOLDER
 from gui.components.widgets import PrimaryButton, SectionTitle
 
 
@@ -124,6 +125,13 @@ class VideoFramePage(BaseTaskPage):
         _, self.content_layout = self._add_card()
 
         self.content_layout.addWidget(SectionTitle("数据增强设置"))
+        augment_hint = QLabel(
+            "注意：当前仅增强图片，不会同步变换标注 JSON；默认输出到 images_aug，"
+            "避免污染已标注的 images 目录。"
+        )
+        augment_hint.setWordWrap(True)
+        augment_hint.setProperty("hint", True)
+        self.content_layout.addWidget(augment_hint)
 
         # 随机种子（唯一的通用参数）
         self.aug_seed_spin = QSpinBox()
@@ -347,7 +355,7 @@ class VideoFramePage(BaseTaskPage):
             return
 
         input_dir = Path(work_dir) / IMAGES_FOLDER
-        output_dir = Path(work_dir) / IMAGES_FOLDER
+        output_dir = Path(work_dir) / AUGMENT_FOLDER
 
         if not input_dir.is_dir():
             QMessageBox.warning(self, "目录错误", f"输入目录不存在：{input_dir}")

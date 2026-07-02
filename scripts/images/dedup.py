@@ -34,6 +34,8 @@ from scripts.common.config import (
 from scripts.common.logging import ProgressLogger, log
 from scripts.common.utils import is_image_file
 
+FeatureVector = np.ndarray
+
 __all__ = [
     "SUPPORTED_BACKENDS",
     "deduplicate",
@@ -109,7 +111,7 @@ def extract_features_vit(
         device,
         batch_size: int = DEFAULT_VIT_BATCH_SIZE,
         grid_size: int = DEFAULT_GRID_SIZE,
-) -> List[Optional[np.ndarray]]:
+) -> List[Optional[FeatureVector]]:
     """批量提取图片特征向量（L2 归一化后的 [CLS] / pooled 输出）。
 
     当 ``grid_size > 1`` 时，每张图片被均匀切分为
@@ -142,7 +144,7 @@ def extract_features_vit(
                     else:
                         all_tiles.append(img)
                         tile_counts.append(1)
-                except Exception as e:
+                except (OSError, Image.UnidentifiedImageError) as e:
                     log(f"[警告] 无法读取图片 {path}: {e}")
                     tile_counts.append(0)
 
@@ -194,7 +196,7 @@ def _phash_vector(image: Image.Image, hash_size: int = DEFAULT_PHASH_SIZE) -> np
         block = dct_full[:hash_size, :hash_size]
         median = np.median(block)
         bits = (block > median).astype(np.float32).flatten()
-    except Exception:
+    except ImportError:
         img = image.convert("L").resize((hash_size + 1, hash_size), Image.LANCZOS)
         arr = np.asarray(img, dtype=np.float32)
         diff = arr[:, 1:] > arr[:, :-1]
@@ -230,7 +232,7 @@ def extract_features_phash(
                     features.append(np.stack(tile_vecs))
                 else:
                     features.append(_phash_vector(img, hash_size=hash_size))
-        except Exception as e:
+        except (OSError, Image.UnidentifiedImageError) as e:
             log(f"[警告] 无法读取图片 {path}: {e}")
             features.append(None)
         progress.update(1)
@@ -271,7 +273,14 @@ def find_duplicates(
     if grid_size <= 1:
         # --- 原始全图模式：向量化矩阵乘法，O(m²) ---
         matrix = np.stack([features[i] for i in valid_indices]).astype(np.float32)
-        sim = matrix @ matrix.T
+        if m > 10000:
+            sim = np.zeros((m, m), dtype=np.float32)
+            chunk_size = 5000
+            for start in range(0, m, chunk_size):
+                end = min(start + chunk_size, m)
+                sim[start:end] = matrix[start:end] @ matrix.T
+        else:
+            sim = matrix @ matrix.T
     else:
         # --- 网格分块模式：预计算所有子块的余弦相似度矩阵，取最不相似格 ---
         all_tile_vecs = np.stack(
@@ -377,11 +386,17 @@ def deduplicate(
                 while dst.exists():
                     dst = move_dir / f"{stem}_{counter}{suffix}"
                     counter += 1
-                shutil.move(str(src), str(dst))
+                try:
+                    shutil.move(str(src), str(dst))
+                except FileNotFoundError:
+                    log(f"[警告] 移动失败，文件不存在: {src}")
             log(f"\n已将 {len(duplicate_paths)} 张重复图片移动到: {move_dir}")
         elif delete:
             for src in duplicate_paths:
-                src.unlink()
+                try:
+                    src.unlink()
+                except FileNotFoundError:
+                    log(f"[警告] 删除失败，文件不存在: {src}")
             log(f"\n已删除 {len(duplicate_paths)} 张重复图片。")
         else:
             log("\n未指定 delete 或 move_to，仅列出重复图片，未执行任何操作。")
