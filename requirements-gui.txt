@@ -12,6 +12,6 @@
 #   pip install -r requirements-gui.txt
 #   pip install pyinstaller
 #
-# 然后参考仓库根目录下的 build.sh / build.spec 进行打包。
+# 然后参考 README 中的 PyInstaller 打包章节。
 
 PyQt5>=5.15.0

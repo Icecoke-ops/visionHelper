@@ -148,7 +148,7 @@ TASK_MODEL_SUFFIX: Dict[str, str] = {
 # --------------------------------------------------------------------------- #
 
 #: 项目版本号。
-VERSION: str = "1.0.1"
+VERSION: str = "1.1.0"
 
 #: 通过该环境变量可整体关闭进度输出（保留首尾汇总）。
 PROGRESS_DISABLE_ENV: str = "VH_NO_PROGRESS"

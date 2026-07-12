@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -61,6 +62,16 @@ class _WorkDirNotifier(QStackedWidget):
             widget.on_page_shown()
 
 
+def _asset_path(name: str) -> Path:
+    """定位 ``gui/assets/`` 下的资源文件，兼容开发态与 PyInstaller 打包态。"""
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        candidate = base / "gui" / "assets" / name
+        if candidate.exists():
+            return candidate
+    return Path(__file__).resolve().parent / "assets" / name
+
+
 def _setup_qt_platform_plugin():
     """设置 PyQt5 平台插件路径。
 
@@ -103,6 +114,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("visionHelper")
         self.setMinimumSize(800, 540)
+
+        # 应用图标：窗口标题栏 / 任务栏 / 关于页共用
+        icon_path = _asset_path("icon.png")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         # 全局上下文：work_dir / python_env 等跨页面状态
         self.ctx = AppContext(self)
@@ -297,6 +313,11 @@ def main():
 
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply_theme(app)
+
+    # 应用级图标：所有窗口与关于页共用，并作为可执行文件的默认图标
+    app_icon = _asset_path("icon.png")
+    if app_icon.exists():
+        app.setWindowIcon(QIcon(str(app_icon)))
 
     window = MainWindow()
     window.show()

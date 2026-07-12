@@ -36,6 +36,30 @@ from PyInstaller.utils.hooks import collect_submodules
 block_cipher = None
 
 
+# ---------------------------------------------------------------------------
+# 应用图标资源
+#
+# ``gui/assets/`` 下存放了项目图标：
+#   - icon.png  ：开发态与 Linux 可执行文件图标
+#   - icon.ico  ：Windows 可执行文件图标（多尺寸）
+#   - icon.icns ：macOS 可执行文件图标
+# 这三个文件随 GUI 一起打进 exe，运行期通过 ``_asset_path``（见 gui/app.py）
+# 从 ``sys._MEIPASS`` 定位。
+# ---------------------------------------------------------------------------
+_ASSETS_DIR = "gui/assets"
+_extra_datas = [
+    (_ASSETS_DIR + "/icon.png", "gui/assets"),
+    (_ASSETS_DIR + "/icon.ico", "gui/assets"),
+    (_ASSETS_DIR + "/icon.icns", "gui/assets"),
+]
+if sys.platform == "win32":
+    _exe_icon = _ASSETS_DIR + "/icon.ico"
+elif sys.platform == "darwin":
+    _exe_icon = _ASSETS_DIR + "/icon.icns"
+else:
+    _exe_icon = _ASSETS_DIR + "/icon.png"
+
+
 # 仅把 gui 包的子模块显式纳入隐式导入，确保动态导入也能找到。
 hidden_imports = collect_submodules("gui")
 
@@ -126,7 +150,7 @@ a = Analysis(
     ["gui_main.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=_extra_datas,
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
@@ -146,6 +170,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="visionHelper",
+    icon=_exe_icon,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

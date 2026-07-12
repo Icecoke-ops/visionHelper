@@ -109,8 +109,9 @@ class AboutPage(QWidget):
         icon_label.setAlignment(Qt.AlignCenter)
         # 优先使用应用窗口图标，没有则用文字占位
         pixmap: QPixmap = QPixmap()
-        if self.parent() is not None:
-            icon = self.parent().windowIcon()
+        app = QApplication.instance()
+        if app is not None:
+            icon = app.windowIcon()
             if not icon.isNull():
                 pixmap = icon.pixmap(64, 64)
         if pixmap.isNull():

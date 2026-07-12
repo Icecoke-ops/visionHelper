@@ -1,6 +1,10 @@
 # visionHelper
 
-> 项目号：`VH-2026-001` | 版本：`1.0.1` | 作者：IceCoke | 协议：MIT
+<p align="center">
+  <img src="gui/assets/icon.png" alt="visionHelper" width="128"/>
+</p>
+
+> 项目号：`VH-2026-001` · 版本：`1.0.1` · 作者：IceCoke · 协议：MIT
 
 围绕 YOLO 数据生产与训练流程的轻量级视觉辅助工具集，将**视频抽帧、图片去重、数据增强、标注统计、自动标注、标注清除、YOLO 数据集导出、模型训练、模型预测**等步骤整合到统一 CLI/API 及图形界面中。
 
@@ -33,8 +37,6 @@
 
 支持 4 种 YOLO 任务：`detect` / `obb` / `segment` / `classify`。
 
-> 说明：当前数据增强仅生成增强后的图片，不会同步变换 X-AnyLabeling JSON 标注；检测/OBB/分割任务使用增强图前需重新标注或自动标注。SAHI 相关训练参数当前仅保存 `sahi_config.json`，暂未接入预测切片推理。`deploy export` 为预留命令，尚未实现。
-
 ---
 
 ## 快速开始
@@ -45,11 +47,7 @@
 pip install -r requirements.txt
 ```
 
-或按需拆分：
-
-- `requirements.txt` — 完整运行依赖
-- `requirements-gui.txt` — GUI 独立打包（仅 PyQt5）
-- `requirements-dev.txt` — 测试（pytest）
+按需拆分：`requirements.txt`（完整）、`requirements-gui.txt`（仅 GUI）、`requirements-dev.txt`（测试）。
 
 ### 命令行
 
@@ -57,7 +55,7 @@ pip install -r requirements.txt
 # 视频抽帧
 python scripts/vh.py images import --input video.mp4 --output frames/ --frame-step 5
 
-# 图片去重 (phash 轻量后端)
+# 图片去重（phash 轻量后端）
 python scripts/vh.py images dedup --input images/ --backend phash --threshold 0.95
 
 # 自动标注
@@ -127,8 +125,6 @@ visionHelper/
 ├── requirements*.txt                 # 依赖管理
 ├── gui_main.py                       # PyInstaller 入口
 ├── visionHelper.spec                 # PyInstaller 构建配置
-├── build.bat / build.sh / build-macos.sh  # 三平台打包脚本
-│
 ├── scripts/                          # ★ 核心工具包
 │   ├── vh.py                         # 统一 CLI 入口与命令行路由
 │   ├── api.py                        # 对外编程接口
@@ -168,6 +164,11 @@ visionHelper/
 │   ├── config.py                     # GUI 常量与运行路径解析
 │   ├── settings.py                   # QSettings 持久化
 │   │
+│   ├── assets/                       # 应用资源
+│   │   ├── icon.png                  # Linux/开发态图标
+│   │   ├── icon.ico                  # Windows 图标
+│   │   └── icon.icns                 # macOS 图标
+│   │
 │   ├── components/                   # 公共 UI 组件
 │   │   ├── widgets.py                # 按钮/表单行/统计项等
 │   │   └── run_log.py                # 运行日志弹窗（QProcess 管理）
@@ -198,18 +199,63 @@ visionHelper/
 
 ---
 
-## 打包
+## 构建与启动
 
-GUI 独立打包（不含 torch/ultralytics 等重型依赖）：
+### 直接启动（开发态）
+
+```bash
+pip install -r requirements.txt
+python -m gui.app        # 方式一
+python gui_main.py       # 方式二（等价）
+```
+
+### PyInstaller 打包
+
+GUI 可独立打包为可执行文件，不含 torch/ultralytics 等重型依赖：
 
 ```bash
 pip install -r requirements-gui.txt pyinstaller
-# Windows:  build.bat
-# Linux:    ./build.sh
-# macOS:    ./build-macos.sh
+pyinstaller --noconfirm --clean visionHelper.spec
 ```
 
-产物位于 `dist/visionHelper/`，包含 `visionHelper(.exe)` + `_internal/` + `scripts/` 源码。运行时在 GUI 顶部指定安装了重型依赖的 Python 解释器路径即可。
+打包完成后，将仓库根目录的 `scripts/` 拷贝到产物目录：
+
+```bash
+# Linux / macOS
+cp -r scripts dist/visionHelper/
+find dist/visionHelper/scripts -type d -name __pycache__ -prune -exec rm -rf {} +
+
+# Windows (PowerShell)
+Copy-Item -Recurse scripts dist/visionHelper/
+Get-ChildItem dist/visionHelper/scripts -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force
+```
+
+产物结构：
+
+```
+dist/visionHelper/
+├── visionHelper(.exe)    ← GUI 可执行文件
+├── _internal/            ← PyInstaller 运行时
+└── scripts/              ← 脚本源码（运行期由用户 Python 解释器加载）
+```
+
+运行时在 GUI 顶部"Python 环境"指定安装了 torch/ultralytics 等依赖的解释器路径即可。
+
+#### macOS 额外步骤
+
+若需生成 `.app` Bundle 以支持双击启动：
+
+```bash
+pyinstaller --noconfirm --clean --windowed visionHelper.spec
+# 将 scripts/ 拷贝到 .app 内部
+cp -r scripts dist/visionHelper.app/Contents/MacOS/
+```
+
+首次运行若被 Gatekeeper 拦截：
+
+```bash
+xattr -dr com.apple.quarantine dist/visionHelper.app
+```
 
 ---
 

@@ -38,10 +38,10 @@ RECYCLE_BIN_FOLDER = "recycle_bin"
 PREDICT_FOLDER = "predict"
 
 # visionHelper 版本号
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 
 # visionHelper 项目号（项目编号 / 项目编码）
-APP_PROJECT_CODE = "VH-2026-001"
+APP_PROJECT_CODE = "VH-2026-002"
 
 # 作者信息
 APP_AUTHOR = "IceCoke"
