@@ -16,6 +16,7 @@ CLI 门面，提供 :func:`deduplicate` 核心实现与 ``main`` 命令行入口
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -32,7 +33,7 @@ from scripts.common.config import (
     SUPPORTED_DEDUP_BACKENDS as SUPPORTED_BACKENDS,
 )
 from scripts.common.logging import ProgressLogger, log
-from scripts.common.utils import is_image_file
+from scripts.common.utils import ensure_models_dir, is_image_file, models_dir
 
 FeatureVector = np.ndarray
 
@@ -88,17 +89,90 @@ def _crop_grid(image: Image.Image, grid_size: int):
 # ---------------------------------------------------------------------- #
 
 
+_DOWNLOAD_COMPLETE_MARKER = ".download_complete"
+
+
+def _model_local_dir(model_name: str) -> Path:
+    """把 HuggingFace 仓库名映射为程序根目录 ``models/hub/`` 下的本地路径。
+
+    ``google/vit-base-patch16-224`` 这类仓库名会被转为本地目录
+    ``models/hub/google__vit-base-patch16-224``，与 YOLO 权重共用 ``models/``
+    根目录、但置于 ``hub/`` 子目录下，避免模型散落到 HuggingFace 缓存，
+    也避免不同组织下同名仓库相互覆盖。
+
+    纯路径计算，不产生目录创建等副作用；需要下载前请调用
+    :func:`ensure_models_dir`。
+    """
+    name = (model_name or "").strip()
+    if not name:
+        raise ValueError("模型名称不能为空")
+    parts = [p for p in name.split("/") if p and p not in {".", ".."}]
+    if not parts:
+        raise ValueError(f"非法模型名称: {model_name!r}")
+    return models_dir() / "hub" / "__".join(parts)
+
+
+def _is_complete_model_dir(local_dir: Path) -> bool:
+    """校验本地模型目录可安全加载：``config.json`` 可解析且存在权重文件。
+
+    仅校验 ``config.json`` 不足以证明快照完整（权重可能缺失或被误删），
+    额外要求存在 ``*.bin`` 或 ``*.safetensors`` 权重文件，否则视为不完整、
+    触发重新下载，避免 ``AutoModel.from_pretrained`` 在加载时抛出难懂错误。
+    """
+    config_file = local_dir / "config.json"
+    try:
+        with config_file.open("r", encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    return (
+        any(local_dir.rglob("*.bin"))
+        or any(local_dir.rglob("*.safetensors"))
+    )
+
+
 def load_model(model_name: str = DEFAULT_VIT_MODEL):
-    """加载 ViT/DINOv2 模型和图像处理器。"""
+    """加载 ViT/DINOv2 模型和图像处理器。
+
+    模型默认存放于程序根目录 ``models/hub/`` 下（与 YOLO 权重同根目录），
+    仅当本地不存在完整模型时才从 HuggingFace 下载。下载完成后写入
+    ``.download_complete`` 标记，避免中断的下载残留被误判为可用副本。
+
+    注意：
+    - 下载过程未加锁，多个进程并发触发时会重复下载/清理同一目录，请勿
+      并发调用本函数；
+    - ``snapshot_download(local_dir=...)`` 在 Windows 上的历史版本可能受
+      符号链接权限影响，请使用较新的 ``huggingface_hub``（>=0.23）。
+    """
     import torch
     from transformers import AutoImageProcessor, AutoModel
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log(f"使用设备: {device}")
-    log(f"正在加载模型: {model_name} ...")
 
-    processor = AutoImageProcessor.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
+    local_dir = _model_local_dir(model_name)
+    complete_marker = local_dir / _DOWNLOAD_COMPLETE_MARKER
+    if complete_marker.exists() and _is_complete_model_dir(local_dir):
+        log(f"正在加载本地模型: {local_dir}")
+        model_path: str = str(local_dir)
+    else:
+        log(f"本地未找到完整模型 {model_name}，正在下载到 {local_dir} ...")
+        from huggingface_hub import snapshot_download
+
+        if local_dir.exists():
+            # 上一次下载中断或不完整，清理后重新下载
+            shutil.rmtree(local_dir, ignore_errors=True)
+        ensure_models_dir()
+        snapshot_download(repo_id=model_name, local_dir=str(local_dir))
+        complete_marker.write_text("ok", encoding="utf-8")
+        log(f"模型下载完成: {local_dir}")
+        model_path = str(local_dir)
+
+    log(f"正在加载模型: {model_name} ...")
+    processor = AutoImageProcessor.from_pretrained(model_path)
+    model = AutoModel.from_pretrained(model_path)
     model.to(device)
     model.eval()
     return processor, model, device
@@ -144,7 +218,7 @@ def extract_features_vit(
                     else:
                         all_tiles.append(img)
                         tile_counts.append(1)
-                except (OSError, Image.UnidentifiedImageError) as e:
+                except (OSError, Image.UnidentifiedImageError, ValueError) as e:
                     log(f"[警告] 无法读取图片 {path}: {e}")
                     tile_counts.append(0)
 
@@ -232,7 +306,7 @@ def extract_features_phash(
                     features.append(np.stack(tile_vecs))
                 else:
                     features.append(_phash_vector(img, hash_size=hash_size))
-        except (OSError, Image.UnidentifiedImageError) as e:
+        except (OSError, Image.UnidentifiedImageError, ValueError) as e:
             log(f"[警告] 无法读取图片 {path}: {e}")
             features.append(None)
         progress.update(1)
@@ -243,6 +317,35 @@ def extract_features_phash(
 # ---------------------------------------------------------------------- #
 # 重复识别
 # ---------------------------------------------------------------------- #
+
+
+def _cosine_sim_matrix(
+        matrix: np.ndarray,
+        chunk_size: int = 5000,
+) -> np.ndarray:
+    """分块计算 ``(m, m)`` 点积相似度矩阵，避免一次性分配过大的中间数组。"""
+    m = matrix.shape[0]
+    sim = np.zeros((m, m), dtype=np.float32)
+    for start in range(0, m, chunk_size):
+        end = min(start + chunk_size, m)
+        sim[start:end] = matrix[start:end] @ matrix.T
+    return sim
+
+
+def _accumulate_min_sim(
+        sim: np.ndarray,
+        matrix: np.ndarray,
+        chunk_size: int = 5000,
+) -> None:
+    """把 ``matrix @ matrix.T`` 分块后与 ``sim`` 做逐元素最小值累积（原地）。
+
+    只分配 ``(chunk, m)`` 的中间结果，避免每张子图额外持有完整 ``(m, m)``
+    矩阵导致内存峰值翻倍。
+    """
+    m = matrix.shape[0]
+    for start in range(0, m, chunk_size):
+        end = min(start + chunk_size, m)
+        np.minimum(sim[start:end], matrix[start:end] @ matrix.T, out=sim[start:end])
 
 
 def find_duplicates(
@@ -271,30 +374,20 @@ def find_duplicates(
     duplicate: List[int] = []
 
     if grid_size <= 1:
-        # --- 原始全图模式：向量化矩阵乘法，O(m²) ---
+        # --- 原始全图模式：向量化矩阵乘法，O(m²)，分块防内存峰值 ---
         matrix = np.stack([features[i] for i in valid_indices]).astype(np.float32)
-        if m > 10000:
-            sim = np.zeros((m, m), dtype=np.float32)
-            chunk_size = 5000
-            for start in range(0, m, chunk_size):
-                end = min(start + chunk_size, m)
-                sim[start:end] = matrix[start:end] @ matrix.T
-        else:
-            sim = matrix @ matrix.T
+        sim = _cosine_sim_matrix(matrix)
     else:
-        # --- 网格分块模式：预计算所有子块的余弦相似度矩阵，取最不相似格 ---
+        # --- 网格分块模式：逐子块计算余弦相似度，取最不相似格 ---
         all_tile_vecs = np.stack(
             [features[i] for i in valid_indices]
         ).astype(np.float32)
         num_tiles = all_tile_vecs.shape[1]
 
-        # (m, m, num_tiles) 各子块的余弦相似度
-        tile_sim_3d = np.zeros((m, m, num_tiles), dtype=np.float32)
+        # 逐子块分块计算并取逐元素最小值，避免一次性构建 (m, m, num_tiles) 3D 数组
+        sim = np.full((m, m), np.inf, dtype=np.float32)
         for t in range(num_tiles):
-            vecs = all_tile_vecs[:, t, :]
-            tile_sim_3d[:, :, t] = vecs @ vecs.T
-
-        sim = tile_sim_3d.min(axis=2)
+            _accumulate_min_sim(sim, all_tile_vecs[:, t, :])
 
     for local_i in range(m):
         if visited[local_i]:

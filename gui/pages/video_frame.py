@@ -7,9 +7,10 @@
 将它们分别放在独立的白色卡片中：
 
     第一张卡片：视频抽帧
-        通过子进程调用 ``python scripts/vh.py images import --input <video>
+        通过子进程调用 ``python scripts/vh.py images import --input <视频>
         --output <dir>`` 将视频按帧间隔抽成图片，输出到工作目录下的
-        ``IMAGES_FOLDER``。
+        ``IMAGES_FOLDER``；输入可以是单个视频文件，也可以是包含多个视频的
+        文件夹（递归扫描，每个视频独立计数、按相对路径命名避免重名）。
 
     第二张卡片：图片去重
         通过子进程调用 ``python scripts/vh.py images dedup --input <folder>``
@@ -35,6 +36,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QRadioButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -44,7 +46,7 @@ from gui import theme
 from gui.utils._proc import build_script_argv
 from gui.pages.base import BaseTaskPage
 from gui.config import AUGMENT_FOLDER, IMAGES_FOLDER, RECYCLE_BIN_FOLDER
-from gui.components.widgets import PrimaryButton, SectionTitle
+from gui.components.widgets import PrimaryButton, SecondaryButton, SectionTitle
 
 
 class VideoFramePage(BaseTaskPage):
@@ -62,7 +64,34 @@ class VideoFramePage(BaseTaskPage):
 
     def _build_frame_card(self):
         """在默认（第一张）卡片中构建视频抽帧表单。"""
-        self.video_path_edit = self._add_file_row("视频文件：", is_directory=False)
+        # 输入方式：单个视频文件 / 整个文件夹
+        self.video_mode_single = QRadioButton("单个视频文件")
+        self.video_mode_single.setChecked(True)
+        self.video_mode_folder = QRadioButton("整个文件夹")
+
+        mode_widget = QWidget()
+        mode_layout = QHBoxLayout(mode_widget)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(theme.SPACING_MD)
+        mode_layout.addWidget(self.video_mode_single)
+        mode_layout.addWidget(self.video_mode_folder)
+        mode_layout.addStretch(1)
+        self._add_widget_row("输入方式：", mode_widget)
+
+        self.video_path_edit = QLineEdit()
+        self.video_path_edit.setPlaceholderText("点击右侧按钮选择路径")
+        self.video_path_edit.setMinimumWidth(300)
+
+        browse_btn = SecondaryButton("浏览")
+        browse_btn.clicked.connect(self._browse_video)
+
+        combo = QWidget()
+        combo_layout = QHBoxLayout(combo)
+        combo_layout.setContentsMargins(0, 0, 0, 0)
+        combo_layout.setSpacing(theme.SPACING_SM)
+        combo_layout.addWidget(self.video_path_edit, 1)
+        combo_layout.addWidget(browse_btn)
+        self._add_widget_row("视频路径：", combo)
 
         self.frame_step_spin = QSpinBox()
         self.frame_step_spin.setRange(1, 10000)
@@ -78,6 +107,10 @@ class VideoFramePage(BaseTaskPage):
         self.run_btn.setMinimumWidth(120)
         self.run_btn.clicked.connect(self._run_extract)
         self.content_layout.addWidget(self.run_btn, alignment=Qt.AlignLeft)
+
+    def _browse_video(self):
+        """根据当前输入方式弹出文件或目录选择对话框。"""
+        self._browse(self.video_path_edit, self.video_mode_folder.isChecked())
 
     # ------------------------------------------------------------------
     # 卡片 2：图片去重
@@ -297,10 +330,12 @@ class VideoFramePage(BaseTaskPage):
     # ------------------------------------------------------------------
 
     def _run_extract(self):
-        """执行视频抽帧任务。"""
-        video_path = self._require_existing_file(
-            self.video_path_edit.text().strip(), "视频文件"
-        )
+        """执行视频抽帧任务（支持单个文件或整个文件夹）。"""
+        raw = self.video_path_edit.text().strip()
+        if self.video_mode_folder.isChecked():
+            video_path = self._require_existing_dir(raw, "视频文件夹")
+        else:
+            video_path = self._require_existing_file(raw, "视频文件")
         if video_path is None:
             return
         work_dir = self._require_work_dir()

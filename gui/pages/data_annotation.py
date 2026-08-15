@@ -9,8 +9,9 @@
     - 包含目标检测框的图片数量
     - 包含 OBB 的图片数量
     - 包含多边形的图片数量
+    - 包含分类标注（顶层 flags）的图片数量
     - 手动标注、自动标注、自动标注并手动矫正的图片数量
-    - 各标签下目标检测、OBB、多边形实例数量
+    - 各标签下目标检测、OBB、多边形、分类实例数量
 
 视觉风格统一来自 :mod:`gui.theme` 与 :mod:`gui.components.widgets`，本模块不再
 书写内联样式。
@@ -64,6 +65,7 @@ _STAT_GROUPS: List[List[tuple]] = [
         ("detection_images", "目标检测数量"),
         ("obb_images", "OBB 数量"),
         ("polygon_images", "多边形数量"),
+        ("classification_images", "分类数量"),
     ],
     [
         ("manual_images", "手动标注数量"),
@@ -106,6 +108,7 @@ class StatsWorkerThread(QThread):
                 cmd, cwd=self.cwd,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace",
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
             if completed.returncode != 0:
                 self.stats_error.emit(
@@ -195,9 +198,9 @@ class DataAnnotationPage(BaseTaskPage, AutoAnnotateMixin):
 
         # 标签统计表格
         self.label_table = QTableWidget()
-        self.label_table.setColumnCount(4)
+        self.label_table.setColumnCount(5)
         self.label_table.setHorizontalHeaderLabels(
-            ["标签名", "目标检测数据量", "OBB 数量", "多边形数量"]
+            ["标签名", "目标检测数据量", "OBB 数量", "多边形数量", "分类数量"]
         )
         for col in range(self.label_table.columnCount()):
             header_item = self.label_table.horizontalHeaderItem(col)
@@ -332,6 +335,11 @@ class DataAnnotationPage(BaseTaskPage, AutoAnnotateMixin):
             polygon_item = QTableWidgetItem(str(item.get("polygon_count", 0)))
             polygon_item.setTextAlignment(Qt.AlignCenter)
             self.label_table.setItem(row, 3, polygon_item)
+
+            # 分类数量
+            classification_item = QTableWidgetItem(str(item.get("classification_count", 0)))
+            classification_item.setTextAlignment(Qt.AlignCenter)
+            self.label_table.setItem(row, 4, classification_item)
 
     def _run_clear_annotations(self):
         """按勾选的标注类型清除目录下的 X-AnyLabeling JSON 标注文件。"""

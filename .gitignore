@@ -95,6 +95,15 @@ out/
 # Cline 项目规则（含本地环境路径等敏感信息）
 .clinerules
 
+# opencode 本地配置（含 node_modules 等，不入库）
+.opencode/
+
+# CodeGraph 本地索引
+.codegraph/
+
+# Cursor 本地配置
+.cursor/
+
 # Vim / Emacs
 *.swp
 *.swo

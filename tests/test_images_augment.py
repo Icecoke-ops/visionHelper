@@ -13,6 +13,7 @@ import pytest
 pytest.importorskip("cv2")
 
 from scripts.images.augment import (
+    AugmentConfig,
     apply_channel_transform,
     apply_random_cut,
     apply_random_occlusion,
@@ -78,8 +79,7 @@ def test_augment_image_reuses_supplied_rng_for_different_results():
     img = _gradient_image()
     rng = random.Random(13)
 
-    first = augment_image(
-        img,
+    config = AugmentConfig(
         rotate_enabled=False,
         cut_enabled=True,
         cut_prob=1.0,
@@ -87,19 +87,10 @@ def test_augment_image_reuses_supplied_rng_for_different_results():
         occlusion_enabled=True,
         occlusion_prob=1.0,
         channel_enabled=False,
-        rng=rng,
     )
-    second = augment_image(
-        img,
-        rotate_enabled=False,
-        cut_enabled=True,
-        cut_prob=1.0,
-        cut_scale=0.5,
-        occlusion_enabled=True,
-        occlusion_prob=1.0,
-        channel_enabled=False,
-        rng=rng,
-    )
+
+    first = augment_image(img, config, rng=rng)
+    second = augment_image(img, config, rng=rng)
 
     assert not np.array_equal(first, second)
 
@@ -114,9 +105,7 @@ def test_augment_images_seed_is_reproducible_but_not_reset_per_image(tmp_path: P
     for idx in range(2):
         cv2.imwrite(str(input_dir / f"{idx}.png"), _gradient_image() + idx)
 
-    saved_a = augment_images(
-        str(input_dir),
-        str(out_a),
+    config = AugmentConfig(
         rotate_enabled=False,
         cut_enabled=False,
         occlusion_enabled=True,
@@ -125,21 +114,10 @@ def test_augment_images_seed_is_reproducible_but_not_reset_per_image(tmp_path: P
         occlusion_size=0.25,
         channel_enabled=False,
         seed=21,
-        ext="png",
     )
-    saved_b = augment_images(
-        str(input_dir),
-        str(out_b),
-        rotate_enabled=False,
-        cut_enabled=False,
-        occlusion_enabled=True,
-        occlusion_prob=1.0,
-        occlusion_count=2,
-        occlusion_size=0.25,
-        channel_enabled=False,
-        seed=21,
-        ext="png",
-    )
+
+    saved_a = augment_images(str(input_dir), str(out_a), config, ext="png")
+    saved_b = augment_images(str(input_dir), str(out_b), config, ext="png")
 
     imgs_a = [cv2.imread(path) for path in saved_a]
     imgs_b = [cv2.imread(path) for path in saved_b]

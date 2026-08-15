@@ -56,11 +56,9 @@ class ImageAPI:
         _require_in_range(occlusion_prob, "occlusion_prob", 0, 1)
         _require_in_range(channel_prob, "channel_prob", 0, 1)
 
-        from scripts.images.augment import augment_images
+        from scripts.images.augment import AugmentConfig, augment_images
 
-        return augment_images(
-            input_dir=input_dir,
-            output_dir=output_dir,
+        config = AugmentConfig(
             rotate_enabled=rotate_enabled,
             rotate_degrees=rotate_degrees,
             rotate_prob=rotate_prob,
@@ -76,6 +74,11 @@ class ImageAPI:
             channel_enabled=channel_enabled,
             channel_prob=channel_prob,
             seed=seed,
+        )
+        return augment_images(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            config=config,
             ext=ext,
             quality=quality,
             prefix=prefix,

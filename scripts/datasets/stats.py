@@ -5,6 +5,11 @@
 
 遍历目录下的图片与对应的 X-AnyLabeling JSON 标注文件，输出整体统计与
 按标签的实例统计；同时提供供 GUI 解析的 JSON 块生成 / 解析工具。
+
+支持两种标注形式：
+
+- 目标检测 / OBB / 分割：标注存放在 ``shapes`` 中（``rectangle`` / ``rotation`` / ``polygon``）。
+- 图像分类：标注存放在顶层 ``flags`` 中（值为 True 的 key 即为该图所属类别）。
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from scripts.common.annotation_type import AnnotationType, AnnotationTypeChecker
 from scripts.common.config import (
@@ -52,6 +57,143 @@ def _detect_shape_types(shapes: List[dict]) -> Set[str]:
     return types
 
 
+def _classification_labels(data: dict) -> List[str]:
+    """提取分类标注标签：顶层 ``flags`` 中值为 True 的 key。"""
+    flags = data.get("flags")
+    if not isinstance(flags, dict):
+        return []
+    return [
+        key for key, value in flags.items()
+        if isinstance(key, str) and key and isinstance(value, bool) and value
+    ]
+
+
+def _iter_annotated_pairs(root: Path):
+    """产出目录下所有"已标注"图片的 ``(annotation_path, data, labels)`` 三元组。
+
+    ``labels`` 为该图的分类标签（顶层 ``flags`` 为 True 的 key），一次遍历
+    计算完成，供整体统计与按标签统计共享，避免对同一 JSON 重复解析。
+    仅遍历一次文件系统，避免重复 I/O。
+    """
+    for _image_path, ann_path, data in iter_matched_pairs(root, require_shapes=False):
+        labels = _classification_labels(data)
+        if data.get("shapes") or labels:
+            yield ann_path, data, labels
+
+
+def _apply_stats_pair(
+        stats: Dict[str, int],
+        ann_path: Path,
+        data: dict,
+        type_checker: AnnotationTypeChecker,
+        classification_labels: List[str],
+) -> None:
+    """把一张已标注图片计入整体统计。"""
+    stats["annotated_images"] += 1
+    shapes = data.get("shapes") or []
+    shape_types = _detect_shape_types(shapes)
+
+    if "rectangle" in shape_types:
+        stats["detection_images"] += 1
+    if "rotation" in shape_types:
+        stats["obb_images"] += 1
+    if "polygon" in shape_types:
+        stats["polygon_images"] += 1
+    if classification_labels:
+        stats["classification_images"] += 1
+
+    try:
+        json_mtime = ann_path.stat().st_mtime
+    except OSError:
+        json_mtime = 0.0
+    ann_type = type_checker.check(data, json_mtime=json_mtime)
+    if ann_type == AnnotationType.MANUAL:
+        stats["manual_images"] += 1
+    elif ann_type == AnnotationType.AUTO:
+        stats["auto_images"] += 1
+    elif ann_type == AnnotationType.AUTO_CORRECTED:
+        stats["auto_corrected_images"] += 1
+
+
+def _apply_label_pair(
+        label_counts: Dict[str, Dict[str, int]],
+        data: dict,
+        classification_labels: List[str],
+) -> None:
+    """把一张已标注图片计入按标签统计。"""
+    for shape in data.get("shapes") or []:
+        if not isinstance(shape, dict):
+            continue
+        label = shape.get("label")
+        shape_type = shape.get("shape_type")
+        if not isinstance(label, str) or not isinstance(shape_type, str):
+            continue
+        counts = label_counts[label]
+        if shape_type == "rectangle":
+            counts["detection_count"] += 1
+        elif shape_type == "rotation":
+            counts["obb_count"] += 1
+        elif shape_type == "polygon":
+            counts["polygon_count"] += 1
+
+    for label in classification_labels:
+        label_counts[label]["classification_count"] += 1
+
+
+def _new_label_counts() -> Dict[str, int]:
+    """创建一份全新的按标签统计计数表。"""
+    return {
+        "detection_count": 0,
+        "obb_count": 0,
+        "polygon_count": 0,
+        "classification_count": 0,
+    }
+
+
+# 整体统计中由单张图片累计的计数键（其余字段在结果组装时派生）
+_STATS_COUNT_KEYS: Tuple[str, ...] = (
+    "annotated_images",
+    "detection_images",
+    "obb_images",
+    "polygon_images",
+    "classification_images",
+    "manual_images",
+    "auto_images",
+    "auto_corrected_images",
+)
+
+
+def _new_stats() -> Dict[str, int]:
+    """创建一份全新的整体统计计数表（全部归零）。"""
+    return {key: 0 for key in _STATS_COUNT_KEYS}
+
+
+def _require_stats_dir(path_str: str) -> Path:
+    """校验统计目录存在并返回其 Path 对象。"""
+    root = Path(path_str)
+    if not root.is_dir():
+        raise ValueError(f"目录不存在或不是文件夹: {path_str}")
+    return root
+
+
+def _build_stats_result(total_images: int, stats: Dict[str, int]) -> Dict[str, int]:
+    """把计数表与图片总数组装为完整的整体统计字典。"""
+    return {
+        "total_images": total_images,
+        "annotated_images": stats["annotated_images"],
+        "unannotated_images": total_images - stats["annotated_images"],
+        **{key: stats[key] for key in _STATS_COUNT_KEYS[1:]},
+    }
+
+
+def _sort_label_stats(label_counts: Dict[str, Dict[str, int]]) -> List[Dict[str, int]]:
+    """把按标签计数表按标签名升序输出为列表。"""
+    return [
+        {"label": label, **counts}
+        for label, counts in sorted(label_counts.items(), key=lambda item: item[0])
+    ]
+
+
 def collect_annotation_stats(folder: str) -> Dict[str, int]:
     """
     统计目录下的图片与标注信息。
@@ -61,114 +203,51 @@ def collect_annotation_stats(folder: str) -> Dict[str, int]:
 
     返回:
         包含 total_images、annotated_images、unannotated_images、
-        detection_images、obb_images、polygon_images、manual_images、
-        auto_images、auto_corrected_images 的统计字典。
+        detection_images、obb_images、polygon_images、classification_images、
+        manual_images、auto_images、auto_corrected_images 的统计字典。
 
     异常:
         ValueError: 目录不存在或不是文件夹。
     """
-    root = Path(folder)
-    if not root.is_dir():
-        raise ValueError(f"目录不存在或不是文件夹: {folder}")
+    root = _require_stats_dir(folder)
 
     # 使用 stem 去重：同一张图片可能有 .jpg/.png 等多个扩展名版本，按 stem 计为一张
     total_images = len({p.stem for p in iter_images(root)})
 
-    annotated_images = 0
-    detection_images = 0
-    obb_images = 0
-    polygon_images = 0
-    manual_images = 0
-    auto_images = 0
-    auto_corrected_images = 0
-
+    stats = _new_stats()
     type_checker = AnnotationTypeChecker()
 
-    for _image_path, ann_path, data in iter_matched_pairs(root, require_shapes=True):
-        annotated_images += 1
-        shapes = data.get("shapes", [])
-        shape_types = _detect_shape_types(shapes)
+    for ann_path, data, classification_labels in _iter_annotated_pairs(root):
+        _apply_stats_pair(stats, ann_path, data, type_checker, classification_labels)
 
-        if "rectangle" in shape_types:
-            detection_images += 1
-        if "rotation" in shape_types:
-            obb_images += 1
-        if "polygon" in shape_types:
-            polygon_images += 1
-
-        try:
-            json_mtime = ann_path.stat().st_mtime
-        except OSError:
-            json_mtime = 0.0
-        ann_type = type_checker.check(data, json_mtime=json_mtime)
-        if ann_type == AnnotationType.MANUAL:
-            manual_images += 1
-        elif ann_type == AnnotationType.AUTO:
-            auto_images += 1
-        elif ann_type == AnnotationType.AUTO_CORRECTED:
-            auto_corrected_images += 1
-
-    unannotated_images = total_images - annotated_images
-
-    return {
-        "total_images": total_images,
-        "annotated_images": annotated_images,
-        "unannotated_images": unannotated_images,
-        "detection_images": detection_images,
-        "obb_images": obb_images,
-        "polygon_images": polygon_images,
-        "manual_images": manual_images,
-        "auto_images": auto_images,
-        "auto_corrected_images": auto_corrected_images,
-    }
+    return _build_stats_result(total_images, stats)
 
 
 def collect_annotation_label_stats(folder: str) -> List[Dict[str, int]]:
     """
     按标签统计目录下的标注实例数量。
 
+    目标检测 / OBB / 分割标签取自 ``shapes``，分类标签取自顶层 ``flags``
+    （值为 True 的 key）。同一标签可同时拥有多种类型计数。
+
     参数:
         folder: 待统计的目录路径。
 
     返回:
         每个标签的实例数量列表，元素包含 label、detection_count、
-        obb_count、polygon_count，按标签名升序排列。
+        obb_count、polygon_count、classification_count，按标签名升序排列。
 
     异常:
         ValueError: 目录不存在或不是文件夹。
     """
-    root = Path(folder)
-    if not root.is_dir():
-        raise ValueError(f"目录不存在或不是文件夹: {folder}")
+    root = _require_stats_dir(folder)
 
-    label_counts: Dict[str, Dict[str, int]] = defaultdict(
-        lambda: {
-            "detection_count": 0,
-            "obb_count": 0,
-            "polygon_count": 0,
-        }
-    )
+    label_counts: Dict[str, Dict[str, int]] = defaultdict(_new_label_counts)
 
-    for _image_path, _ann_path, data in iter_matched_pairs(root, require_shapes=True):
-        for shape in data.get("shapes", []):
-            if not isinstance(shape, dict):
-                continue
-            label = shape.get("label")
-            shape_type = shape.get("shape_type")
-            if not isinstance(label, str) or not isinstance(shape_type, str):
-                continue
-            counts = label_counts[label]
-            if shape_type == "rectangle":
-                counts["detection_count"] += 1
-            elif shape_type == "rotation":
-                counts["obb_count"] += 1
-            elif shape_type == "polygon":
-                counts["polygon_count"] += 1
+    for _ann_path, data, classification_labels in _iter_annotated_pairs(root):
+        _apply_label_pair(label_counts, data, classification_labels)
 
-    return [
-        {"label": label, **counts}
-        for label, counts in sorted(label_counts.items(), key=lambda item: item[0])
-    ]
+    return _sort_label_stats(label_counts)
 
 
 def collect_all_stats(input_dir: str):
@@ -185,85 +264,19 @@ def collect_all_stats(input_dir: str):
     返回:
         ``(stats, label_stats)`` 元组，含义同上述两个函数。
     """
-    root = Path(input_dir)
-    if not root.is_dir():
-        raise ValueError(f"目录不存在或不是文件夹: {input_dir}")
+    root = _require_stats_dir(input_dir)
 
     total_images = len({p.stem for p in iter_images(root)})
 
-    annotated_images = 0
-    detection_images = 0
-    obb_images = 0
-    polygon_images = 0
-    manual_images = 0
-    auto_images = 0
-    auto_corrected_images = 0
-
+    stats = _new_stats()
     type_checker = AnnotationTypeChecker()
+    label_counts: Dict[str, Dict[str, int]] = defaultdict(_new_label_counts)
 
-    label_counts: Dict[str, Dict[str, int]] = defaultdict(
-        lambda: {"detection_count": 0, "obb_count": 0, "polygon_count": 0}
-    )
+    for ann_path, data, classification_labels in _iter_annotated_pairs(root):
+        _apply_stats_pair(stats, ann_path, data, type_checker, classification_labels)
+        _apply_label_pair(label_counts, data, classification_labels)
 
-    for _image_path, ann_path, data in iter_matched_pairs(root, require_shapes=True):
-        annotated_images += 1
-        shapes = data.get("shapes", [])
-        shape_types = _detect_shape_types(shapes)
-
-        if "rectangle" in shape_types:
-            detection_images += 1
-        if "rotation" in shape_types:
-            obb_images += 1
-        if "polygon" in shape_types:
-            polygon_images += 1
-
-        try:
-            json_mtime = ann_path.stat().st_mtime
-        except OSError:
-            json_mtime = 0.0
-        ann_type = type_checker.check(data, json_mtime=json_mtime)
-        if ann_type == AnnotationType.MANUAL:
-            manual_images += 1
-        elif ann_type == AnnotationType.AUTO:
-            auto_images += 1
-        elif ann_type == AnnotationType.AUTO_CORRECTED:
-            auto_corrected_images += 1
-
-        for shape in shapes:
-            if not isinstance(shape, dict):
-                continue
-            label = shape.get("label")
-            shape_type = shape.get("shape_type")
-            if not isinstance(label, str) or not isinstance(shape_type, str):
-                continue
-            counts = label_counts[label]
-            if shape_type == "rectangle":
-                counts["detection_count"] += 1
-            elif shape_type == "rotation":
-                counts["obb_count"] += 1
-            elif shape_type == "polygon":
-                counts["polygon_count"] += 1
-
-    unannotated_images = total_images - annotated_images
-
-    stats = {
-        "total_images": total_images,
-        "annotated_images": annotated_images,
-        "unannotated_images": unannotated_images,
-        "detection_images": detection_images,
-        "obb_images": obb_images,
-        "polygon_images": polygon_images,
-        "manual_images": manual_images,
-        "auto_images": auto_images,
-        "auto_corrected_images": auto_corrected_images,
-    }
-
-    label_stats = [
-        {"label": label, **counts}
-        for label, counts in sorted(label_counts.items(), key=lambda item: item[0])
-    ]
-
-    return stats, label_stats
+    return _build_stats_result(total_images, stats), _sort_label_stats(label_counts)
 
 
 # --------------------------------------------------------------------------- #
@@ -279,6 +292,7 @@ def print_stats_human(stats: Dict[str, int]) -> None:
     log(f"  目标检测数量    : {stats['detection_images']}")
     log(f"  OBB 数量        : {stats['obb_images']}")
     log(f"  多边形数量      : {stats['polygon_images']}")
+    log(f"  分类数量        : {stats.get('classification_images', 0)}")
     log(f"  手动标注数量    : {stats['manual_images']}")
     log(f"  自动标注数量    : {stats['auto_images']}")
     log(f"  手动矫正数量    : {stats['auto_corrected_images']}")
@@ -290,7 +304,7 @@ def print_label_stats_human(label_stats: List[Dict[str, int]]) -> None:
     if not label_stats:
         log("  （未发现任何标签实例）")
         return
-    header = f"  {'标签名':<24}{'检测':>8}{'OBB':>8}{'多边形':>8}"
+    header = f"  {'标签名':<24}{'检测':>8}{'OBB':>8}{'多边形':>8}{'分类':>8}"
     log(header)
     log("  " + "-" * (len(header) - 2))
     for item in label_stats:
@@ -299,6 +313,7 @@ def print_label_stats_human(label_stats: List[Dict[str, int]]) -> None:
             f"{item.get('detection_count', 0):>8}"
             f"{item.get('obb_count', 0):>8}"
             f"{item.get('polygon_count', 0):>8}"
+            f"{item.get('classification_count', 0):>8}"
         )
 
 

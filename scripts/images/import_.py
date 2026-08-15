@@ -15,12 +15,14 @@ CLI 门面，提供 :func:`extract_video_frames` 核心实现与 ``main`` 命令
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from scripts.common.config import (
     SUPPORTED_SEEK_MODES,
+    SUPPORTED_VIDEO_EXTENSIONS,
     SUPPORTED_VIDEO_FRAME_EXTENSIONS as SUPPORTED_EXTENSIONS,
 )
 from scripts.common.logging import ProgressLogger, log
@@ -28,7 +30,9 @@ from scripts.common.logging import ProgressLogger, log
 __all__ = [
     "SUPPORTED_EXTENSIONS",
     "SUPPORTED_SEEK_MODES",
+    "SUPPORTED_VIDEO_EXTENSIONS",
     "extract_video_frames",
+    "extract_video_frames_batch",
     "main",
 ]
 
@@ -265,6 +269,141 @@ def extract_video_frames(
     return saved_paths
 
 
+def _iter_video_files(input_dir: Path) -> List[Path]:
+    """递归收集目录下所有受支持的视频文件（按路径排序）。"""
+    return sorted(
+        p for p in input_dir.rglob("*")
+        if p.is_file() and p.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+    )
+
+
+def _build_video_prefix(prefix: str, video: Path, input_path: Path) -> str:
+    """根据视频相对输入目录的路径生成抽帧文件名前缀。
+
+    路径段用 ``_`` 连接（如 ``sub/clip.mp4`` → ``sub_clip``），使不同
+    目录下的视频默认拥有独立的输出命名空间。
+    """
+    rel_key = "_".join(video.relative_to(input_path).with_suffix("").parts)
+    return f"{prefix}_{rel_key}"
+
+
+def _disambiguate_video_prefixes(
+        videos: List[Path],
+        input_path: Path,
+        prefix: str,
+) -> Dict[Path, str]:
+    """为每个视频生成互不重复的输出文件名前缀。
+
+    当不同视频的相对路径经 ``_`` 拼接后恰好相同（如顶层 ``a_b.mp4``
+    与子目录 ``a/b.mp4`` 都会得到 ``a_b``）时，对冲突项追加相对路径的
+    短哈希后缀，保证不同视频抽出的帧不会重名。
+    """
+    keys = [_build_video_prefix(prefix, video, input_path) for video in videos]
+
+    counts: Dict[str, int] = {}
+    for key in keys:
+        counts[key] = counts.get(key, 0) + 1
+
+    result: Dict[Path, str] = {}
+    for video, key in zip(videos, keys):
+        if counts[key] == 1:
+            result[video] = key
+        else:
+            rel = str(video.relative_to(input_path)).replace("\\", "/")
+            # 仅作文件名消歧，非安全性用途（不需要密码学强度）
+            digest = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:8]
+            result[video] = f"{key}_{digest}"
+    return result
+
+
+def extract_video_frames_batch(
+        input_dir: str,
+        output_dir: str,
+        frame_step: int = 1,
+        image_extension: str = "jpg",
+        quality: int = 100,
+        prefix: str = "frame",
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        seek_mode: str = "decode_all",
+        overwrite: bool = False,
+        failures: Optional[List[Tuple[Path, str]]] = None,
+) -> List[str]:
+    """将目录下所有视频文件逐个抽帧，返回全部保存的图片路径列表。
+
+    每个视频独立计数，输出文件名形如 ``<prefix>_<相对路径>_000001.jpg``，
+    其中 ``<相对路径>`` 为该视频相对输入目录的路径（目录分隔符替换为
+    ``_``），保证不同视频抽出的帧不会重名。
+
+    参数:
+        input_dir: 包含视频文件的输入目录（递归扫描）。
+        其余参数含义与 :func:`extract_video_frames` 一致。
+        failures: 可选输出列表；部分视频失败时，失败明细 ``(视频路径, 原因)``
+            会被追加到此列表（调用方传入空列表即可感知部分失败）。
+            默认 ``None`` 时不收集，仅记录日志。
+
+    返回:
+        全部视频保存的图片路径列表（按视频顺序、帧顺序）。
+    """
+    input_path = Path(input_dir)
+    if not input_path.is_dir():
+        raise FileNotFoundError(f"输入目录不存在: {input_dir}")
+
+    import cv2
+
+    videos = _iter_video_files(input_path)
+    if not videos:
+        raise ValueError(f"目录下没有找到支持的视频文件: {input_dir}")
+
+    video_prefixes = _disambiguate_video_prefixes(videos, input_path, prefix)
+
+    saved: List[str] = []
+    failures = failures if failures is not None else []
+    for video in videos:
+        try:
+            saved.extend(
+                extract_video_frames(
+                    input_video=str(video),
+                    output_dir=output_dir,
+                    frame_step=frame_step,
+                    image_extension=image_extension,
+                    quality=quality,
+                    prefix=video_prefixes[video],
+                    start_time=start_time,
+                    end_time=end_time,
+                    seek_mode=seek_mode,
+                    overwrite=overwrite,
+                )
+            )
+        except (OSError, ValueError, RuntimeError, cv2.error) as exc:
+            # 单个视频失败（坏文件、解码不支持等）不中断整批，记录后继续
+            failures.append((video, str(exc)))
+            log(f"[警告] 视频抽帧失败，跳过 {video}: {exc}", stream=sys.stderr)
+        except Exception as exc:
+            # 编程错误等意外异常：保留完整 traceback，便于定位问题，
+            # 避免内部 bug 被误当作"单视频失败"而静默降级。
+            import traceback
+
+            failures.append((video, f"意外错误: {exc}"))
+            log(f"[警告] 视频抽帧发生意外错误，跳过 {video}: {exc}", stream=sys.stderr)
+            log(traceback.format_exc(), stream=sys.stderr)
+
+    if failures:
+        detail = "；".join(f"{video}: {reason}" for video, reason in failures)
+        log(
+            f"批量抽帧完成：成功 {len(videos) - len(failures)}/{len(videos)} 个视频，"
+            f"失败 {len(failures)} 个，共抽取 {len(saved)} 帧，保存到: {output_dir}"
+        )
+        log(f"失败明细：{detail}", stream=sys.stderr)
+        if not saved:
+            raise RuntimeError(
+                f"批量抽帧失败：{len(failures)} 个视频全部处理失败，详见日志"
+            )
+    else:
+        log(f"共处理 {len(videos)} 个视频，抽取 {len(saved)} 帧，保存到: {output_dir}")
+    return saved
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -277,7 +416,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description="视频抽帧工具：按指定间隔抽取视频画面并保存为图片。",
     )
     parser.add_argument(
-        "--input", "-i", required=True, help="输入视频文件路径"
+        "--input", "-i", required=True,
+        help="输入视频文件路径，或包含视频文件的目录（目录将递归扫描所有视频）",
     )
     parser.add_argument(
         "--output", "-o", required=True, help="输出图片保存目录（不存在会自动创建）"
@@ -343,9 +483,9 @@ def _validate_args(args: argparse.Namespace) -> None:
     """对命令行参数做友好的预校验。"""
     input_path = Path(args.input)
     if not input_path.exists():
-        raise ValueError(f"输入视频不存在：{args.input}")
-    if not input_path.is_file():
-        raise ValueError(f"输入视频不是文件：{args.input}")
+        raise ValueError(f"输入路径不存在：{args.input}")
+    if not (input_path.is_file() or input_path.is_dir()):
+        raise ValueError(f"输入路径既不是文件也不是目录：{args.input}")
 
     output_path = Path(args.output)
     if output_path.exists() and not output_path.is_dir():
@@ -382,18 +522,32 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        saved = extract_video_frames(
-            input_video=args.input,
-            output_dir=args.output,
-            frame_step=args.frame_step,
-            image_extension=args.ext,
-            quality=args.quality,
-            prefix=args.prefix,
-            start_time=args.start_time,
-            end_time=args.end_time,
-            seek_mode=args.seek_mode,
-            overwrite=args.overwrite,
-        )
+        if Path(args.input).is_dir():
+            saved = extract_video_frames_batch(
+                input_dir=args.input,
+                output_dir=args.output,
+                frame_step=args.frame_step,
+                image_extension=args.ext,
+                quality=args.quality,
+                prefix=args.prefix,
+                start_time=args.start_time,
+                end_time=args.end_time,
+                seek_mode=args.seek_mode,
+                overwrite=args.overwrite,
+            )
+        else:
+            saved = extract_video_frames(
+                input_video=args.input,
+                output_dir=args.output,
+                frame_step=args.frame_step,
+                image_extension=args.ext,
+                quality=args.quality,
+                prefix=args.prefix,
+                start_time=args.start_time,
+                end_time=args.end_time,
+                seek_mode=args.seek_mode,
+                overwrite=args.overwrite,
+            )
     except KeyboardInterrupt:
         log("[已取消] 用户中断，部分帧可能未写入完成。", stream=sys.stderr)
         return 130

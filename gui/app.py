@@ -19,11 +19,6 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QApplication,
-    QFileDialog,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
     QMainWindow,
     QStackedWidget,
     QVBoxLayout,
@@ -36,9 +31,9 @@ from gui.pages.model_training import ModelTrainingPage
 from gui.pages.predict import PredictPage
 from gui.pages.video_frame import VideoFramePage
 from gui.pages.welcome import WelcomePage
+from gui.pages.settings import SettingsPage
 from gui.pages.about import AboutPage
 from gui.context import AppContext
-from gui.components.widgets import SecondaryButton
 
 
 class _WorkDirNotifier(QStackedWidget):
@@ -107,7 +102,7 @@ class MainWindow(QMainWindow):
 
         QStackedWidget
           ├── WelcomePage     ：启动后首先展示的引导页
-          └── 主工作界面       ：菜单栏 + 顶部工作目录条 + 页面堆栈
+          └── 主工作界面       ：菜单栏 + 页面堆栈
     """
 
     def __init__(self):
@@ -134,7 +129,6 @@ class MainWindow(QMainWindow):
         self._root_stack.addWidget(self._welcome_page)
         self._root_stack.addWidget(self._main_widget)
 
-        self._load_settings()
         self._show_welcome()
 
     # ------------------------------------------------------------------
@@ -147,7 +141,7 @@ class MainWindow(QMainWindow):
         menubar.addAction("标注信息", lambda: self._switch_page_by_name("annotation"))
         menubar.addAction("模型训练", lambda: self._switch_page_by_name("training"))
         menubar.addAction("模型预测", lambda: self._switch_page_by_name("predict"))
-        menubar.addAction("关闭项目", self._show_welcome)
+        menubar.addAction("设置", lambda: self._switch_page_by_name("settings"))
         menubar.addAction("关于", lambda: self._switch_page_by_name("about"))
 
 
@@ -172,8 +166,7 @@ class MainWindow(QMainWindow):
     def _on_work_dir_selected(self, path: str):
         if not path:
             return
-        self.work_dir_edit.setText(path)
-        self._save_work_dir()
+        self.settings_page.set_work_dir(path)
         # 把欢迎页的最新顺序写回设置
         settings.save_recent_dirs(self._welcome_page.recent_dirs())
         self._switch_page(0)
@@ -189,93 +182,22 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._init_top_bars(layout)
-
         self.stacked = _WorkDirNotifier()
         self.pages = {
             "video": VideoFramePage(ctx=self.ctx),
             "annotation": DataAnnotationPage(ctx=self.ctx),
             "training": ModelTrainingPage(ctx=self.ctx),
             "predict": PredictPage(ctx=self.ctx),
+            "settings": SettingsPage(ctx=self.ctx),
             "about": AboutPage(),
         }
+        self.settings_page = self.pages["settings"]
+        self.settings_page.close_project_requested.connect(self._show_welcome)
 
         for page in self.pages.values():
             self.stacked.addWidget(page)
         layout.addWidget(self.stacked, 1)
         return central
-
-    def _init_top_bars(self, parent_layout: QVBoxLayout):
-        """构建顶部"工作目录 + Python 环境"信息条。"""
-        bar = QFrame()
-        bar.setProperty("variant", "topbar")
-        theme.refresh_widget_style(bar)
-
-        v = QVBoxLayout(bar)
-        v.setContentsMargins(theme.SPACING_MD, theme.SPACING_SM, theme.SPACING_MD, theme.SPACING_SM)
-        v.setSpacing(theme.SPACING_SM)
-
-        bold = theme.app_font()
-        bold.setBold(True)
-        label_width = 88
-
-        # 工作目录行
-        wd_row = QHBoxLayout()
-        wd_row.setSpacing(theme.SPACING_SM)
-        wd_lbl = QLabel("工作目录：")
-        wd_lbl.setFixedWidth(label_width)
-        wd_lbl.setFont(bold)
-        wd_row.addWidget(wd_lbl)
-        self.work_dir_edit = QLineEdit()
-        self.work_dir_edit.setPlaceholderText("选择工作环境目录，后续选路径将默认从此处开始")
-        self.work_dir_edit.editingFinished.connect(self._save_work_dir)
-        self.work_dir_edit.textChanged.connect(self.ctx.set_work_dir)
-        wd_row.addWidget(self.work_dir_edit, 1)
-        wd_btn = SecondaryButton("浏览")
-        wd_btn.clicked.connect(self._browse_work_dir)
-        wd_row.addWidget(wd_btn)
-        v.addLayout(wd_row)
-
-        # Python 环境行
-        py_row = QHBoxLayout()
-        py_row.setSpacing(theme.SPACING_SM)
-        py_lbl = QLabel("Python 环境：")
-        py_lbl.setFixedWidth(label_width)
-        py_lbl.setFont(bold)
-        py_row.addWidget(py_lbl)
-        self.python_env_edit = QLineEdit()
-        self.python_env_edit.setPlaceholderText(
-            "选择 Python 可执行文件（例如 /path/to/venv/bin/python），"
-            "脚本将通过该环境运行"
-        )
-        self.python_env_edit.editingFinished.connect(self._save_python_env)
-        self.python_env_edit.textChanged.connect(self.ctx.set_python_env)
-        py_row.addWidget(self.python_env_edit, 1)
-        py_btn = SecondaryButton("浏览")
-        py_btn.clicked.connect(self._browse_python_env)
-        py_row.addWidget(py_btn)
-        v.addLayout(py_row)
-
-        parent_layout.addWidget(bar)
-
-    # ------------------------------------------------------------------
-    # 顶部按钮交互
-    # ------------------------------------------------------------------
-
-    def _browse_work_dir(self):
-        start = self.work_dir_edit.text().strip() or str(Path.home())
-        path = QFileDialog.getExistingDirectory(self, "选择工作目录", start)
-        if path:
-            self.work_dir_edit.setText(path)
-            self._save_work_dir()
-            settings.promote_recent_dir(path)
-
-    def _browse_python_env(self):
-        start = self.python_env_edit.text().strip() or str(Path.home())
-        path, _ = QFileDialog.getOpenFileName(self, "选择 Python 可执行文件", start)
-        if path:
-            self.python_env_edit.setText(path)
-            self._save_python_env()
 
     # ------------------------------------------------------------------
     # 页面切换
@@ -291,20 +213,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "pages") and name in self.pages:
             index = list(self.pages.keys()).index(name)
             self._switch_page(index)
-
-    # ------------------------------------------------------------------
-    # 设置持久化
-    # ------------------------------------------------------------------
-
-    def _load_settings(self):
-        self.work_dir_edit.setText(settings.load_work_dir())
-        self.python_env_edit.setText(settings.load_python_env())
-
-    def _save_work_dir(self):
-        settings.save_work_dir(self.work_dir_edit.text())
-
-    def _save_python_env(self):
-        settings.save_python_env(self.python_env_edit.text())
 
 
 def main():

@@ -4,7 +4,7 @@
   <img src="gui/assets/icon.png" alt="visionHelper" width="128"/>
 </p>
 
-> 项目号：`VH-2026-001` · 版本：`1.0.1` · 作者：IceCoke · 协议：MIT
+> 项目号：`VH-2026-002` · 版本：`1.2.0` · 作者：IceCoke · 协议：MIT
 
 围绕 YOLO 数据生产与训练流程的轻量级视觉辅助工具集，将**视频抽帧、图片去重、数据增强、标注统计、自动标注、标注清除、YOLO 数据集导出、模型训练、模型预测**等步骤整合到统一 CLI/API 及图形界面中。
 
@@ -47,12 +47,12 @@
 pip install -r requirements.txt
 ```
 
-按需拆分：`requirements.txt`（完整）、`requirements-gui.txt`（仅 GUI）、`requirements-dev.txt`（测试）。
+项目依赖统一声明于 `requirements.txt`。
 
 ### 命令行
 
 ```bash
-# 视频抽帧
+# 视频抽帧（支持单个视频，或包含视频的目录批量抽帧）
 python scripts/vh.py images import --input video.mp4 --output frames/ --frame-step 5
 
 # 图片去重（phash 轻量后端）
@@ -83,10 +83,11 @@ python scripts/vh.py predict run --model best.pt --input test.jpg --output resul
 from scripts.api import VideoAPI, ImageAPI, AnnotationAPI, TrainingAPI, PredictAPI
 
 VideoAPI.extract_video_frames(input_video="video.mp4", output_dir="frames/", frame_step=5)
+VideoAPI.extract_video_frames_batch(input_dir="videos/", output_dir="frames/", frame_step=5)
 ImageAPI.deduplicate(folder="images/", backend="phash", hash_size=16)
 AnnotationAPI.annotation_stats("images/")
 TrainingAPI.export_yolo_dataset(input_dir="images/", output_dir=".dataset", task="detect")
-TrainingAPI.train_model(dataset_yaml=".dataset/data.yaml", task="detect", model="yolov8n", epochs=100)
+TrainingAPI.train_model(dataset_yaml=".dataset/data.yaml", project="runs", name="exp", task="detect", model="yolov8n", epochs=100)
 PredictAPI.predict(model_path="best.pt", input_path="test.jpg", output_dir="results/")
 ```
 
@@ -125,9 +126,16 @@ visionHelper/
 ├── requirements*.txt                 # 依赖管理
 ├── gui_main.py                       # PyInstaller 入口
 ├── visionHelper.spec                 # PyInstaller 构建配置
+├── gui_main.spec                     # PyInstaller 构建配置（备用）
 ├── scripts/                          # ★ 核心工具包
 │   ├── vh.py                         # 统一 CLI 入口与命令行路由
-│   ├── api.py                        # 对外编程接口
+│   ├── api/                          # 对外编程接口
+│   │   ├── _validators.py            # 参数校验工具
+│   │   ├── video.py                  # VideoAPI（视频处理）
+│   │   ├── image.py                  # ImageAPI（图片处理）
+│   │   ├── annotation.py             # AnnotationAPI（标注 / 统计）
+│   │   ├── training.py               # TrainingAPI（数据集导出 / 训练）
+│   │   └── predict.py                # PredictAPI（模型预测）
 │   │
 │   ├── common/                       # 公共基础模块
 │   │   ├── config.py                 # 后端常量（任务类型、扩展名等）
@@ -180,7 +188,8 @@ visionHelper/
 │   │   ├── data_annotation.py        # 标注统计 + 清除
 │   │   ├── model_training.py         # 数据集导出 + 训练
 │   │   ├── predict.py                # 模型预测
-│   │   └── about.py                  # 关于页（版本/环境信息）
+│   │   ├── about.py                  # 关于页（版本/环境信息）
+│   │   └── settings.py               # 设置页（工作目录 / Python 环境）
 │   │
 │   └── utils/                        # GUI 内部工具
 │       └── _proc.py                  # 子进程参数构造
@@ -191,10 +200,13 @@ visionHelper/
     ├── test_auto_annotate.py
     ├── test_clear_annotations.py
     ├── test_common_iters.py
+    ├── test_datasets_stats.py
     ├── test_deduplicate_phash.py
     ├── test_export_yolo_dataset.py
     ├── test_gui_proc.py
-    └── test_images_augment.py
+    ├── test_images_augment.py
+    ├── test_train_model.py
+    └── test_video_extract.py
 ```
 
 ---
@@ -214,7 +226,7 @@ python gui_main.py       # 方式二（等价）
 GUI 可独立打包为可执行文件，不含 torch/ultralytics 等重型依赖：
 
 ```bash
-pip install -r requirements-gui.txt pyinstaller
+pip install PyQt5 pyinstaller
 pyinstaller --noconfirm --clean visionHelper.spec
 ```
 
@@ -239,7 +251,7 @@ dist/visionHelper/
 └── scripts/              ← 脚本源码（运行期由用户 Python 解释器加载）
 ```
 
-运行时在 GUI 顶部"Python 环境"指定安装了 torch/ultralytics 等依赖的解释器路径即可。
+运行时在 GUI「设置」页的"Python 环境"中指定安装了 torch/ultralytics 等依赖的解释器路径即可。
 
 #### macOS 额外步骤
 
@@ -262,7 +274,7 @@ xattr -dr com.apple.quarantine dist/visionHelper.app
 ## 开发约定
 
 - 业务逻辑放在 `scripts/<subpackage>/<feature>.py` 中；`scripts/vh.py` 仅做统一入口与路由。
-- 每个功能通过 `scripts/api.py` 中的 API 类方法对外暴露，方法体内懒加载重型依赖。
+- 每个功能通过 `scripts/api/` 包中的 API 类方法对外暴露，方法体内懒加载重型依赖。
 - `scripts/` 各 `__init__.py` 必须保持零副作用，禁止 import 重型子模块。
 - `gui/` 通过子进程调用 `python -m scripts.vh` 执行任务，耗时操作不阻塞 UI。
 - 数据集标注格式基于 X-AnyLabeling JSON（兼容 LabelMe）。
@@ -271,6 +283,6 @@ xattr -dr com.apple.quarantine dist/visionHelper.app
 
 ```bash
 pip install -r requirements.txt
-pip install -r requirements-dev.txt
+pip install pytest
 pytest
 ```

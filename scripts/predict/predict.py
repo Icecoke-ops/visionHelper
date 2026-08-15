@@ -24,11 +24,19 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from scripts.common.config import IMAGE_EXTENSIONS, SUPPORTED_TASKS
+from scripts.common.config import (
+    IMAGE_EXTENSIONS,
+    SUPPORTED_TASKS,
+    SUPPORTED_VIDEO_EXTENSIONS,
+)
 from scripts.common.logging import ProgressLogger, log
-from scripts.common.utils import find_model_class_names, is_image_file
-
-import cv2
+from scripts.common.utils import (
+    ensure_models_dir,
+    find_model_class_names,
+    is_image_file,
+    models_dir,
+    resolve_model_path,
+)
 
 __all__ = ["predict", "main"]
 
@@ -40,6 +48,8 @@ def _draw_detect_results(
         conf_threshold: float,
 ) -> None:
     """在图片/帧上绘制检测框和标签。"""
+    import cv2
+
     boxes = getattr(result, "boxes", None)
     if boxes is None:
         return
@@ -73,6 +83,8 @@ def _draw_obb_results(
         conf_threshold: float,
 ) -> None:
     """在图片/帧上绘制旋转框。"""
+    import cv2
+
     obb = getattr(result, "obb", None)
     if obb is None:
         return
@@ -107,12 +119,13 @@ def _draw_segment_results(
         conf_threshold: float,
 ) -> None:
     """在图片/帧上绘制分割掩码。"""
+    import cv2
+    import numpy as np
+
     masks = getattr(result, "masks", None)
     boxes = getattr(result, "boxes", None)
     if masks is None or getattr(masks, "xy", None) is None:
         return
-
-    import numpy as np
 
     cls_list = (
         boxes.cls.tolist()
@@ -159,6 +172,8 @@ def _draw_classify_results(
         class_names: List[str],
 ) -> None:
     """在图片/帧上绘制分类结果。"""
+    import cv2
+
     probs = getattr(result, "probs", None)
     if probs is None or not class_names:
         return
@@ -224,7 +239,9 @@ def predict(
     使用 YOLO 模型对图片或视频进行预测，将可视化结果保存到输出目录。
 
     参数:
-        model_path: YOLO 模型权重文件路径（.pt）。
+        model_path: YOLO 模型权重文件路径（.pt），或可触发自动下载的
+            裸模型名（如 ``yolov8n``）；裸模型名仅在显式路径（含目录
+            分隔符）时校验存在性。
         input_path: 输入图片、图片目录或视频文件路径。
         output_dir: 输出目录，用于保存预测结果。
         threshold: 置信度阈值，必须位于 (0, 1]，默认 0.25。
@@ -240,7 +257,6 @@ def predict(
         ValueError: 参数非法。
     """
 
-    model_file = Path(model_path)
     input_p = Path(input_path)
 
     output_path = Path(output_dir)
@@ -260,6 +276,11 @@ def predict(
     except ImportError as exc:
         raise RuntimeError("未安装 ultralytics，请先执行：pip install ultralytics") from exc
 
+    model_file = resolve_model_path(model_path, task=task)
+    if model_file.parent == models_dir() and not model_file.exists():
+        # 裸模型名映射到 models/ 且本地不存在 → 即将触发 Ultralytics 自动下载，
+        # 确保目标目录可写，避免下载中途失败。全部参数校验通过后才创建。
+        ensure_models_dir()
     yolo_model = YOLO(str(model_file))
     class_names = find_model_class_names(yolo_model)
 
@@ -273,7 +294,7 @@ def predict(
 
     if input_p.is_file():
         ext = input_p.suffix.lower()
-        video_exts = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm"}
+        video_exts = SUPPORTED_VIDEO_EXTENSIONS
         if ext in video_exts:
             stats = _predict_video(
                 yolo_model, input_p, output_path, task, class_names,
@@ -313,6 +334,8 @@ def _predict_single_image(
         predict_kwargs: Dict[str, object],
 ) -> Dict[str, object]:
     """预测单张图片并保存结果。"""
+    import cv2
+
     stats: Dict[str, object] = {"total": 0, "success": 0, "failed": 0, "input_type": "image"}
     stats["total"] += 1
     conf_threshold = predict_kwargs.get("conf", 0.25)
@@ -349,6 +372,8 @@ def _predict_image_dir(
         batch_size: int = 16,
 ) -> Dict[str, object]:
     """批量预测目录中的图片（分批推理以利用 Ultralytics 内部批处理）。"""
+    import cv2
+
     stats: Dict[str, object] = {"total": 0, "success": 0, "failed": 0, "input_type": "images"}
 
     images = sorted([p for p in input_dir.iterdir() if is_image_file(p)])
@@ -404,6 +429,7 @@ def _predict_video(
         predict_kwargs: Dict[str, object],
 ) -> Dict[str, object]:
     """预测视频并保存结果，带进度条显示。"""
+    import cv2
     import time
 
     cap = cv2.VideoCapture(str(video_path))
@@ -548,11 +574,13 @@ def _validate_args(args: argparse.Namespace) -> None:
     """对命令行参数做友好的预校验。"""
     from pathlib import Path
 
-    model_path = Path(args.model)
-    if not model_path.exists():
-        raise ValueError(f"模型权重文件不存在：{args.model}")
-    if not model_path.is_file():
-        raise ValueError(f"模型权重路径不是文件：{args.model}")
+    model_path = Path(args.model).expanduser()
+    if len(model_path.parts) > 1:
+        # 显式路径（含目录分隔符）必须指向已存在的文件
+        if not model_path.exists():
+            raise ValueError(f"模型权重文件不存在：{args.model}")
+        if not model_path.is_file():
+            raise ValueError(f"模型权重路径不是文件：{args.model}")
 
     input_path = Path(args.input)
     if not input_path.exists():

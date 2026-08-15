@@ -31,6 +31,9 @@ DATASET_FOLDER = "dataset"
 # 训练结果文件夹名称：模型训练结果保存目录
 TRAIN_FOLDER = "runs"
 
+# 预训练基础模型（自动下载）存放目录名称，位于应用根目录下
+MODELS_FOLDER = "models"
+
 # 回收站文件夹名称：图片去重时移动重复图片的目标目录
 RECYCLE_BIN_FOLDER = "recycle_bin"
 
@@ -38,7 +41,7 @@ RECYCLE_BIN_FOLDER = "recycle_bin"
 PREDICT_FOLDER = "predict"
 
 # visionHelper 版本号
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 # visionHelper 项目号（项目编号 / 项目编码）
 APP_PROJECT_CODE = "VH-2026-002"
@@ -58,13 +61,17 @@ def is_frozen() -> bool:
 def app_root() -> Path:
     """返回应用根目录，即 ``scripts/`` 包所在的父目录。
 
+    规则与 :func:`scripts.common.utils.app_root` 保持一致，并优先复用其实现
+    （单一事实来源，避免两处逻辑漂移）；仅当 ``scripts`` 包不可导入时
+    回退到本地的等价实现。
+
     - 开发态：返回仓库根目录 ``<repo>/``，由 ``gui/config.py`` 文件位置
       推断（``parents[1]``）。
     - 打包态（``sys.frozen``）：返回可执行文件所在目录。打包发布物形如::
 
           dist/visionHelper/
-          ├── visionHelper(.exe)        ← sys.executable
-          └── scripts/                  ← 与 exe 同级的脚本源码目录
+          ├── visionHelper(.exe)      ← sys.executable
+          └── scripts/                ← 与 exe 同级的脚本源码目录
 
       因此使用 ``Path(sys.executable).parent`` 即可得到 ``scripts/`` 的
       父目录。
@@ -72,6 +79,12 @@ def app_root() -> Path:
     - 允许通过环境变量 ``VISIONHELPER_APP_ROOT`` 强制覆盖，便于自定义部署
       布局或调试。
     """
+    try:
+        from scripts.common.utils import app_root as _scripts_app_root
+        return _scripts_app_root()
+    except ImportError:
+        pass
+
     override = os.environ.get("VISIONHELPER_APP_ROOT", "").strip()
     if override:
         return Path(override).resolve()

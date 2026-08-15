@@ -8,7 +8,7 @@ import pytest
 
 from scripts.common.train_config import TrainConfig
 from scripts.api import TrainingAPI
-from scripts.train.train import _resolve_model_name
+from scripts.common.utils import _complete_model_name as _resolve_model_name
 
 
 def test_resolve_model_name_appends_task_suffix_only_when_missing():

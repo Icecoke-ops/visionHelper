@@ -29,8 +29,8 @@ class AnnotationAPI:
 
         返回:
             包含 total_images、annotated_images、unannotated_images、
-            detection_images、obb_images、polygon_images、manual_images、
-            auto_images、auto_corrected_images 的统计字典。
+            detection_images、obb_images、polygon_images、classification_images、
+            manual_images、auto_images、auto_corrected_images 的统计字典。
         """
         _require_existing_dir(folder, "folder")
 
@@ -92,6 +92,7 @@ class AnnotationAPI:
             errors="replace",
             timeout=timeout,
             check=False,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
 
         stdout = completed.stdout or ""

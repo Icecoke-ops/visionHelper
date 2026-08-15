@@ -24,10 +24,14 @@ from scripts.common.config import (
     IMAGES_FOLDER,
     SUPPORTED_OPTIMIZERS,
     SUPPORTED_TASKS,
-    TASK_MODEL_SUFFIX,
 )
 from scripts.common.logging import log
 from scripts.common.sahi_config import SAHIConfig
+from scripts.common.utils import (
+    ensure_models_dir,
+    models_dir,
+    resolve_model_path,
+)
 
 __all__ = [
     "SUPPORTED_OPTIMIZERS",
@@ -191,24 +195,6 @@ class TrainingConfig:
             )
 
 
-def _resolve_model_name(model: str, task: str) -> str:
-    """根据任务类型补全模型权重文件名。"""
-    model = model.strip()
-    if not model:
-        raise ValueError("模型名称不能为空")
-
-    suffix = TASK_MODEL_SUFFIX.get(task, "")
-
-    if model.lower().endswith(".pt"):
-        stem = model[:-3]
-    else:
-        stem = model
-
-    if suffix and not stem.endswith(suffix):
-        stem = f"{stem}{suffix}"
-    return f"{stem}.pt"
-
-
 def train_model(cfg: TrainingConfig) -> str:
     """使用 Ultralytics YOLO 训练目标检测 / OBB / 分割 / 分类模型。
 
@@ -224,9 +210,13 @@ def train_model(cfg: TrainingConfig) -> str:
             "未安装 ultralytics，请先执行：pip install ultralytics"
         ) from exc
 
-    model_name = _resolve_model_name(cfg.model, cfg.task)
-    log(f"加载模型: {model_name}")
-    yolo_model = YOLO(model_name)
+    model_path = resolve_model_path(cfg.model, cfg.task)
+    if model_path.parent == models_dir() and not model_path.exists():
+        # 裸模型名映射到 models/ 且本地不存在 → 触发 Ultralytics 自动下载，
+        # 提前确保目标目录可写，避免下载中途失败。
+        ensure_models_dir()
+    log(f"加载模型: {model_path}")
+    yolo_model = YOLO(str(model_path))
 
     yaml_path = Path(cfg.dataset_yaml)
 
@@ -302,11 +292,11 @@ def train_model(cfg: TrainingConfig) -> str:
     sahi_config: Optional[SAHIConfig] = None
     if cfg.sahi_enabled:
         sahi_config = SAHIConfig(
-            enabled=True,
-            slice_height=cfg.sahi_slice_height,
-            slice_width=cfg.sahi_slice_width,
-            overlap_height_ratio=cfg.sahi_overlap_height_ratio,
-            overlap_width_ratio=cfg.sahi_overlap_width_ratio,
+            sahi_enabled=True,
+            sahi_slice_height=cfg.sahi_slice_height,
+            sahi_slice_width=cfg.sahi_slice_width,
+            sahi_overlap_height_ratio=cfg.sahi_overlap_height_ratio,
+            sahi_overlap_width_ratio=cfg.sahi_overlap_width_ratio,
         )
 
     try:

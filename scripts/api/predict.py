@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Optional
 
 from scripts.api._validators import (
-    _require_existing_file,
     _require_in_range,
     _require_non_empty_str,
 )
@@ -27,8 +26,20 @@ class PredictAPI:
     ) -> dict:
         """
         使用 YOLO 模型对图片或视频进行预测，将可视化结果保存到输出目录。
+
+        参数:
+            model_path: YOLO 模型权重文件路径（.pt），或可触发自动下载的
+                裸模型名（如 ``yolov8n``）；裸模型名仅在显式路径（含目录
+                分隔符）时校验存在性。
         """
-        _require_existing_file(model_path, "model_path")
+        _require_non_empty_str(model_path, "model_path")
+        model_p = Path(model_path).expanduser()
+        if len(model_p.parts) > 1:
+            # 显式路径（含目录分隔符）必须指向已存在的文件
+            if not model_p.exists():
+                raise FileNotFoundError(f"模型权重文件不存在: {model_path}")
+            if not model_p.is_file():
+                raise FileNotFoundError(f"模型权重路径不是文件: {model_path}")
         _require_non_empty_str(input_path, "input_path")
         _require_non_empty_str(output_dir, "output_dir")
 

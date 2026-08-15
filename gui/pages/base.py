@@ -338,7 +338,7 @@ class BaseTaskPage(BasePage):
         """
         raw = self._work_dir()
         if not raw:
-            QMessageBox.warning(self, "参数缺失", "请在导航栏下方设置工作目录")
+            QMessageBox.warning(self, "参数缺失", "请在「设置」页设置工作目录")
             return None
         path = Path(raw)
         if not path.is_dir():
@@ -444,7 +444,7 @@ class BaseTaskPage(BasePage):
                 QMessageBox.warning(
                     self,
                     "未配置 Python 环境",
-                    "当前为打包发布版本，必须在导航栏下方手动选择带有所需依赖"
+                    "当前为打包发布版本，必须在「设置」页手动选择带有所需依赖"
                     "（torch / ultralytics 等）的 Python 可执行文件后再运行任务。",
                 )
                 return
@@ -477,14 +477,14 @@ class BaseTaskPage(BasePage):
             QMessageBox.warning(
                 self,
                 "未配置 Python 环境",
-                "当前为打包发布版本，必须在导航栏下方手动选择带有所需依赖"
+                "当前为打包发布版本，必须在「设置」页手动选择带有所需依赖"
                 "（torch / ultralytics 等）的 Python 可执行文件后再运行任务。",
             )
         else:
             QMessageBox.warning(
                 self,
                 "未配置 Python 环境",
-                "开发态下建议在导航栏下方配置 Python 环境，\n"
+                "开发态下建议在「设置」页配置 Python 环境，\n"
                 "当前将使用默认解释器运行，可能缺少依赖。",
             )
 

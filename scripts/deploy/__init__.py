@@ -3,7 +3,9 @@
 """
 scripts/deploy 包：模型部署相关 CLI 与实现。
 
-本包遵循零副作用导入原则。当前功能尚未实现，仅作占位。
+本包遵循零副作用导入原则（仅导入标准库依赖，无重量级副作用）。
 """
+
+from scripts.deploy.deploy import main
 
 __all__ = ["main"]

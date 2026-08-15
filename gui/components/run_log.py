@@ -21,6 +21,7 @@
 import datetime as _dt
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import IO, Iterable, Optional
 
@@ -225,6 +226,12 @@ class RunLogDialog(QDialog):
         if self._log_file_path is not None:
             self._append_log(f"[log] {self._log_file_path}\n")
         self._append_log(f"$ {cmd}\n")
+        if os.name == "nt" and hasattr(self.process, "setCreateProcessArgumentsModifier"):
+            # Windows 下隐藏子进程的黑色控制台窗口（CREATE_NO_WINDOW）
+            no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            self.process.setCreateProcessArgumentsModifier(
+                lambda args: args.setFlags(args.flags() | no_window)
+            )
         self.process.start(self.program, self.arguments)
 
         # 进程启动后切换到"运行中"状态

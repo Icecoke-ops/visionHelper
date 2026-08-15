@@ -118,6 +118,12 @@ SEGMENT_SHAPE_TYPES: FrozenSet[str] = frozenset({"polygon"})
 # extract_video_frames
 # --------------------------------------------------------------------------- #
 
+#: 视频抽帧支持的输入视频文件扩展名（统一小写、带点号）。
+SUPPORTED_VIDEO_EXTENSIONS: FrozenSet[str] = frozenset({
+    ".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv",
+    ".webm", ".m4v", ".mpg", ".mpeg", ".ts", ".3gp",
+})
+
 #: 视频抽帧支持的输出图片格式。
 SUPPORTED_VIDEO_FRAME_EXTENSIONS: FrozenSet[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff", ".tif"}
@@ -143,12 +149,15 @@ TASK_MODEL_SUFFIX: Dict[str, str] = {
     "classify": "-cls",
 }
 
+#: 预训练基础模型（自动下载）统一存放的目录名称，位于应用根目录下。
+MODELS_FOLDER: str = "models"
+
 # --------------------------------------------------------------------------- #
 # 进度日志
 # --------------------------------------------------------------------------- #
 
 #: 项目版本号。
-VERSION: str = "1.1.0"
+VERSION: str = "1.2.0"
 
 #: 通过该环境变量可整体关闭进度输出（保留首尾汇总）。
 PROGRESS_DISABLE_ENV: str = "VH_NO_PROGRESS"
